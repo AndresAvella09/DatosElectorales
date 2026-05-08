@@ -1,0 +1,41 @@
+[project]
+name = "datos-electorales"
+version = "0.1.0"
+description = "Sistema modular de scraping y análisis de sentimiento electoral — Colombia 2026"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/contracts",
+    "packages/logger",
+    "apps/api",
+]
+
+[tool.uv.sources]
+contracts = { workspace = true }
+logger = { workspace = true }
+data_pipeline = { workspace = true }
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["packages", "data_pipeline", "apps", "ml"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["contracts", "logger", "data_pipeline"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

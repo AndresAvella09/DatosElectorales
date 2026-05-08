@@ -1,0 +1,65 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ─── Virtual Environments ───
+.venv/
+venv/
+env/
+
+# ─── uv ───
+# Keep uv.lock in version control for deterministic builds
+# uv.lock
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Environment Variables ───
+.env
+.env.local
+.env.production
+
+# ─── Data (versionado con DVC, no con Git) ───
+data/bronze/*
+data/silver/*
+data/gold/*
+!data/bronze/.gitkeep
+!data/silver/.gitkeep
+!data/gold/.gitkeep
+
+# ─── Scraper outputs (no comitear CSVs crudos) ───
+*.csv
+!packages/scrapers/**/example_*.csv
+
+# ─── Logs ───
+*.log
+logs/
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Docker ───
+docker-compose.override.yml
+
+# ─── Node (para apps/web si se usa) ───
+node_modules/
+.next/
+out/
+
+# ─── DVC ───
+*.dvc
+/dvc.lock
+
+# ─── Debug artifacts ───
+debug_artifacts/

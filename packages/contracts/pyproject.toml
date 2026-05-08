@@ -1,0 +1,8 @@
+[project]
+name = "contracts"
+version = "0.1.0"
+description = "Esquemas Pydantic que definen los contratos de datos entre capas del pipeline Medallion."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+]

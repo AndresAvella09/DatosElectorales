@@ -1,0 +1,4 @@
+# Twitter/X Scraper — Dependencias
+pandas>=2.0
+playwright>=1.40
+python-dotenv>=1.0
