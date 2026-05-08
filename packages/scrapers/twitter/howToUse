@@ -1,0 +1,50 @@
+# X/Twitter Scraper
+
+## Requisitos
+
+- Python 3.11+
+- Dependencias en requirements.txt
+- Microsoft Edge instalado en Windows
+
+## Instalacion (venv recomendado)
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m playwright install
+```
+
+## Perfil real de Edge
+
+- El scraper usa el perfil real del usuario en Edge para reducir el bloqueo antibot.
+- Cierra todas las ventanas de Edge antes de ejecutar el script.
+- Opcional: `X_REAL_PROFILE_DIR` para una ruta manual y `X_PROFILE_NAME` para elegir un perfil.
+
+## Uso desde notebook
+
+1. Ejecuta la celda de `query` y `limit`.
+2. Ejecuta la celda de scraping (Playwright), que llama el script externo.
+3. Revisa `tweets_colombia.csv` o usa `df.head()`.
+4. Ejecuta el pipeline de sentimiento desde el notebook para generar las salidas agregadas.
+
+## Uso por linea de comandos
+
+**1) Scraping**
+
+```powershell
+python playwright_scrape.py --query "elecciones Colombia since:2022-01-01 until:2022-12-31 lang:es" --limit 10 --out tweets_colombia.csv --headless
+```
+
+## Archivos de salida
+
+- `tweets_colombia.csv`: dataset crudo del scraping.
+
+## Parametros utiles
+
+- `--headful` abre la ventana del navegador (depuracion).
+- `--max-scrolls` controla el maximo de scrolls.
+- `--scroll-pause` pausa entre scrolls.
+- `--chunk-size` guarda lotes parciales a CSV.
+- `--log-level` controla el nivel de log (DEBUG/INFO/WARNING/ERROR).
+- `--debug-dir` guarda `empty_results.png` y `page.html` si no hay resultados.
