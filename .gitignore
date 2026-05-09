@@ -12,6 +12,7 @@ build/
 .venv/
 venv/
 env/
+**/venv/
 
 # ─── uv ───
 # Keep uv.lock in version control for deterministic builds
