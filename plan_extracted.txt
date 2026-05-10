@@ -1,0 +1,468 @@
+PROYECTO ELECTORAL COLOMBIA 2026
+Plan de Arquitectura DataOps — Especificación de Implementación para Claude Code
+Repositorio: DatosElectorales
+Alcance: Scraping → Warehouse Supabase → API → Front React
+Versión 1.0 · Mayo 2026
+0. Cómo leer este documento
+Este documento es la especificación de implementación que recibirá Claude Code para trabajar sobre el repositorio DatosElectorales. Está escrito como contrato técnico: cada sección define un componente del pipeline DataOps, sus entregables y sus criterios de aceptación. El alcance se restringe deliberadamente a arquitectura, ingesta, calidad, almacenamiento, orquestación, observabilidad, despliegue y front; el modelado y la analítica de sentimiento están fuera del alcance de este plan.
+La sección 14 (Hitos críticos) y la sección 15 (Segmentación por agentes) son la guía para distribuir el trabajo entre varias instancias de IA en paralelo. Cada paquete está pensado para que un agente lo pueda tomar de forma independiente con la mínima coordinación.
+Convenciones: las rutas comienzan en la raíz del repo. Los comandos se asumen ejecutados con uv. Cuando un componente ya existe en el repo se indica explícitamente y la tarea es "endurecer" o "integrar", no "crear desde cero".
+1. Resumen ejecutivo (TL;DR)
+El repo ya tiene buena base: monorepo con uv, contratos Pydantic Bronze/Silver/Gold, scrapers por red, un orquestador de ingesta CSV, checks de calidad básicos y un FastAPI placeholder. Lo que falta para llegar a producción a tiempo es: (i) Supabase como warehouse real con schemas y migraciones versionadas, (ii) pipeline E2E automático Bronze→Silver→Gold cargando a Supabase, (iii) un Quality Gate bloqueante entre Silver y Gold, (iv) un orquestador (Prefect) para correr todo cada N horas, (v) Docker compose por servicios para que cualquier agente lo levante con un comando, (vi) observabilidad mínima (logs estructurados + tabla pipeline_runs + alertas), (vii) un front React leyendo vistas Gold vía PostgREST, y (viii) CI/CD que valide contratos y migraciones en cada PR.
+La intervención manual queda confinada a la fase de scraping (login, captchas, validación humana de los CSV crudos). Desde el momento en que un CSV cae en data/inbox/ todo el resto del pipeline corre solo, valida calidad, sube a Supabase y refresca las vistas que consume el front.
+2. Diagnóstico del estado actual
+2.1 Lo que ya existe y se conserva
+Monorepo gestionado con uv (pyproject.toml + workspaces): packages/contracts, packages/logger, apps/api.
+Contratos Pydantic estables en packages/contracts (RawSocialPost, CleanPost, EnrichedPost). Estos son la fuente de verdad para los esquemas.
+Scrapers por red con su propia documentación: Twitter (Playwright), YouTube (API v3), TikTok (en progreso), Facebook (pendiente).
+Orquestador de ingesta data_pipeline/ingestion/orchestrator.py que toma CSVs y los normaliza a RawSocialPost.
+Capa Silver con cleaner/anonymizer/validator y capa Gold con feature_builder.
+Quality checks en data_pipeline/quality/checks.py (completeness, freshness, volume).
+infra/docker-compose.yml esqueleto con servicios api, scraper-youtube, scraper-twitter.
+FastAPI placeholder en apps/api con endpoints /health y /api/v1/status.
+2.2 Brechas que este plan resuelve
+Supabase está vacío y desordenado: no hay schemas, ni migraciones, ni RLS, ni storage, ni vistas para el front.
+Bronze/Silver/Gold viven solo en disco local (data/bronze, data/silver, data/gold). No hay loader hacia Supabase.
+No hay orquestador. El pipeline corre por scripts manuales sin dependencias ni reintentos.
+No hay observabilidad: ningún registro central de qué corrió, cuántos rows entraron, qué falló.
+Los Dockerfiles referenciados en docker-compose no existen en infra/docker/.
+El Quality Gate no es bloqueante: nada impide que datos malos lleguen a Gold.
+apps/web está vacío. No hay front.
+CI solo tiene README, no workflows reales para validar PRs.
+3. Principios de diseño DataOps
+Manual sólo donde es inevitable. La intervención humana queda en scraping (login, captchas, decisión de qué query corre). Todo el resto es automatizado y reentrante.
+Contratos antes que código. Los esquemas Pydantic en packages/contracts son la única fuente de verdad. Si cambia un contrato, cambian las migraciones SQL automáticamente.
+Idempotencia. Cualquier paso del pipeline puede correrse dos veces sin duplicar datos (UPSERT por id en Supabase, deduplicación explícita en Silver).
+Quality Gate bloqueante. Datos que no pasan calidad no llegan a Gold ni a la vista del front.
+Trazabilidad end-to-end. Cada registro lleva su ingested_at, cleaned_at, run_id. Cada corrida del pipeline queda registrada en una tabla ops.pipeline_runs.
+Despliegue con un comando. docker compose up levanta el stack completo en local. CI publica imágenes versionadas.
+Time-to-deliver primero. Donde haya que elegir entre la solución elegante y la solución funcional, gana la funcional. Documentar la deuda técnica, no resolverla ahora.
+4. Arquitectura objetivo
+4.1 Diagrama lógico
+┌─────────────────────────────────────────────────────────────────────┐
+│ MANUAL                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
+│  │ Twitter  │  │ YouTube  │  │ Facebook │  │  TikTok  │             │
+│  │ scraper  │  │ scraper  │  │ scraper  │  │ scraper  │             │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘             │
+│       └────────────┬┴─────────────┴────────────┬┘                   │
+│                    ▼                                                │
+│          data/inbox/<source>/<date>/*.csv                           │
+└───────────────────┬─────────────────────────────────────────────────┘
+                    │  (file watcher / Prefect cron)
+                    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ AUTOMÁTICO (Prefect orchestrator + Docker)                          │
+│                                                                     │
+│   ingestion → bronze (Supabase Storage + raw.<source>)              │
+│       ↓                                                             │
+│   silver (clean + anonymize + dedup + lang detect)                  │
+│       ↓                                                             │
+│   ┌──────────────── Quality Gate (BLOQUEANTE) ────────────────┐     │
+│   │  completeness · freshness · volume · schema · pii_leak    │     │
+│   └─── PASS ──────┬───────────────────────────── FAIL ────────┘     │
+│       ↓ FAIL → ops.pipeline_runs(status=failed) + alerta            │
+│       ↓ PASS                                                        │
+│   gold features → public.gold_* tables/views                        │
+│       ↓                                                             │
+│   refresh materialized views consumidas por API                     │
+└───────────────────┬─────────────────────────────────────────────────┘
+                    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ SERVING                                                             │
+│   FastAPI (apps/api) ── Supabase Postgres ── PostgREST              │
+│              ▲                                  ▲                   │
+│              │                                  │                   │
+│              └─────── React Front (apps/web) ───┘                   │
+└─────────────────────────────────────────────────────────────────────┘
+Pipeline objetivo. La línea horizontal separa lo manual (scraping) de lo automático (todo lo demás).
+4.2 Capas y responsabilidades
+5. Stack tecnológico recomendado
+Decisiones tomadas optimizando time-to-deliver. Cada elección tiene racional explícito; si un agente decide cambiarla debe documentar el porqué en docs/adr/.
+6. Diseño de Supabase como Data Warehouse
+Supabase es Postgres con extras. Lo tratamos como un warehouse columnar pequeño: schemas separados por capa, particionamiento por fecha donde haga falta, vistas materializadas para el serving y RLS para que el front nunca toque tablas crudas.
+6.1 Estructura de schemas
+6.2 Tablas mínimas (por schema)
+raw.posts
+create table raw.posts (
+  id            text primary key,            -- ej. tw_123, yt_abc
+  source        text not null,               -- twitter, youtube, facebook, tiktok, other
+  source_id     text not null,
+  storage_path  text not null,               -- bucket/path en Supabase Storage
+  ingested_at   timestamptz not null default now(),
+  run_id        uuid not null,
+  raw_payload   jsonb                        -- copia mínima para auditoría
+);
+create index on raw.posts (source, ingested_at desc);
+create index on raw.posts (run_id);
+silver.posts
+create table silver.posts (
+  id              text primary key,
+  source          text not null,
+  source_id       text not null,
+  datetime_utc    timestamptz,
+  username_hash   text,
+  text_clean      text not null,
+  text_original   text,
+  parent_id       text,
+  engagement      jsonb default '{}'::jsonb,
+  metadata        jsonb default '{}'::jsonb,
+  lang            text,
+  pii_detected    boolean default false,
+  pii_types       text[] default '{}',
+  is_duplicate    boolean default false,
+  cleaned_at      timestamptz not null default now(),
+  run_id          uuid not null
+) partition by range (cleaned_at);
+-- Crear particiones mensuales con un cron simple en SQL.
+gold.features
+create table gold.features (
+  id                 text primary key references silver.posts(id),
+  source             text not null,
+  datetime_utc       timestamptz,
+  word_count         int,
+  char_count         int,
+  has_hashtags       boolean,
+  has_emojis         boolean,
+  hour_of_day        int,
+  day_of_week        int,
+  days_until_election int,
+  engagement_score   numeric,
+  -- Slots reservados para ML (los rellena el equipo de modelos)
+  sentiment_label    text,
+  sentiment_score    numeric,
+  enriched_at        timestamptz not null default now(),
+  run_id             uuid not null
+);
+create index on gold.features (source, datetime_utc desc);
+ops.pipeline_runs
+create table ops.pipeline_runs (
+  run_id          uuid primary key,
+  flow_name       text not null,             -- ej. "bronze_to_gold"
+  status          text not null,             -- running | success | failed | quality_failed
+  started_at      timestamptz not null,
+  finished_at     timestamptz,
+  rows_in         int,
+  rows_out        int,
+  quality_summary jsonb,
+  error           text
+);
+
+create table ops.quality_reports (
+  run_id      uuid references ops.pipeline_runs(run_id),
+  layer       text,                          -- silver | gold
+  overall     text,                          -- PASS | WARN | FAIL
+  checks      jsonb,
+  created_at  timestamptz default now(),
+  primary key (run_id, layer)
+);
+6.3 Vistas para el front (schema public)
+El front nunca consulta gold.* ni silver.* directamente. Solo lee vistas materializadas en public expuestas vía PostgREST. Esto da control de columnas, RLS y caching.
+create materialized view public.v_sentiment_daily as
+select
+  date_trunc('day', datetime_utc)::date as day,
+  source,
+  count(*)                              as posts,
+  avg(sentiment_score) filter (where sentiment_score is not null) as avg_sentiment
+from gold.features
+group by 1, 2;
+create unique index on public.v_sentiment_daily (day, source);
+
+-- Refresco al final del flow gold:
+refresh materialized view concurrently public.v_sentiment_daily;
+6.4 RLS y roles
+anon: SELECT solo en public.v_*. Nada más.
+authenticated: igual a anon por ahora; reservado para iteraciones.
+service_role: usado únicamente por el pipeline (Prefect / FastAPI con service key). Escribe en raw, silver, gold, ops.
+Habilitar RLS en todas las tablas; políticas explícitas que denieguen por defecto.
+6.5 Storage
+Bucket bronze-raw (privado): aquí caen los CSV/JSON crudos tal cual los entregó el scraper. Path: <source>/<YYYY-MM-DD>/<filename>.
+Bucket exports (privado): outputs intermedios para auditoría (reportes de calidad, dumps semanales).
+Política: solo service_role tiene acceso. El front nunca lee Storage.
+6.6 Migraciones
+Toda creación/alteración de tablas vive como migración SQL en infra/supabase/migrations/<timestamp>__<nombre>.sql.
+Aplicar localmente con: supabase db reset (entorno dev) y supabase db push (entorno prod).
+Cada PR que toque schema debe incluir su migración. CI valida que supabase db lint pase.
+7. Pipeline detallado paso a paso
+7.1 Etapa 0 — Scraping (manual)
+Cada scraper corre en su entorno local (Edge/Playwright para Twitter, API key para YouTube, etc.).
+Salida única: un CSV con el esquema esperado por el orchestrator, escrito en data/inbox/<source>/<YYYY-MM-DD>/run_<HHMMSS>.csv.
+Responsabilidad humana: validar que el CSV no esté vacío, que las columnas obligatorias existan y mover el archivo a inbox. No corre nada más manualmente.
+7.2 Etapa 1 — Ingestion → Bronze (automática)
+Trigger: file watcher (watchdog) + cron de Prefect cada 30 min como red de seguridad.
+Pasos por archivo: 1) calcular sha256, 2) subir a Storage bucket bronze-raw, 3) parsear CSV con el mapeador correspondiente del orchestrator, 4) UPSERT en raw.posts con run_id, 5) mover archivo de inbox/ a data/processed/<date>/.
+Idempotencia: el sha256 evita reingerir el mismo archivo; el primary key id en raw.posts evita duplicados de registros.
+7.3 Etapa 2 — Bronze → Silver (automática)
+Lee de raw.posts las filas con run_id de la corrida actual.
+Aplica data_pipeline/silver/cleaner.py (normaliza texto, dedup) y anonymizer.py (PII masking, hash de username).
+UPSERT a silver.posts. Marca is_duplicate=true en lugar de borrar.
+Detección de idioma con langdetect (fallback simple si falla).
+7.4 Etapa 3 — Quality Gate (BLOQUEANTE)
+Esta es la frontera entre Silver y Gold. Si falla, el flow se marca como quality_failed y Gold no se toca. Ningún dato malo llega al front.
+Checks obligatorios:
+completeness: campos obligatorios (id, source, text_clean, datetime_utc) no vacíos > 95%.
+freshness: ningún registro con datetime_utc futuro; al menos 80% de los registros con fecha < 30 días.
+volume: el número de registros no debe variar más de ±70% respecto al promedio de los últimos 7 runs.
+schema: 100% de los registros validan contra el contrato CleanPost.
+pii_leak: 0 registros con pii_detected=true que no hayan pasado por anonymizer.
+Salida: insertar fila en ops.quality_reports y resumen en ops.pipeline_runs.quality_summary.
+Política: cualquier check FAIL bloquea la promoción a Gold. Un check WARN sigue, pero genera alerta.
+7.5 Etapa 4 — Silver → Gold (automática)
+Aplica data_pipeline/gold/feature_builder.py y produce EnrichedPost.
+UPSERT a gold.features.
+Slots de ML (sentiment_label, sentiment_score) quedan en NULL; el equipo de modelos los actualiza cuando estén listos. El pipeline DataOps no espera por ML.
+7.6 Etapa 5 — Refresh views + notify
+REFRESH MATERIALIZED VIEW CONCURRENTLY de todas las public.v_*.
+Marca ops.pipeline_runs.status=success.
+Si falla cualquier etapa: status=failed (o quality_failed) + alerta (ver §10).
+8. Quality Gate como bloqueante de promoción
+Ya existe data_pipeline/quality/checks.py con tres checks. Hay que: (a) extender la lista de checks como en §7.4, (b) hacer que el orquestador respete el resultado y NO ejecute la fase Gold si el overall es FAIL, (c) persistir cada reporte en ops.quality_reports.
+8.1 Estructura del reporte
+{
+  "run_id": "uuid",
+  "layer": "silver",
+  "overall": "PASS|WARN|FAIL",
+  "checks": [
+    {"check": "completeness", "status": "PASS", "completeness_pct": 98.4, ...},
+    {"check": "freshness",    "status": "WARN", "stale_records": 12, ...},
+    {"check": "volume",       "status": "PASS", "count": 4321, ...},
+    {"check": "schema",       "status": "PASS", "invalid": 0, ...},
+    {"check": "pii_leak",     "status": "PASS", "leaked": 0, ...}
+  ]
+}
+8.2 Reglas de promoción
+PASS → continúa a Gold.
+WARN → continúa pero registra alerta WARNING en ops + Prefect notification.
+FAIL → aborta el flow, marca quality_failed, alerta CRITICAL.
+9. Orquestación con Prefect
+Prefect 3 corre en un contenedor Docker dentro del docker-compose. Tiene UI web local en :4200 y persiste su estado en su propia DB SQLite (no mezclar con Supabase).
+9.1 Flows que hay que crear
+9.2 Convenciones de código Prefect
+Cada flow vive en data_pipeline/flows/<flow_name>.py.
+Cada task usa @task(retries=N, retry_delay_seconds=...) explícito.
+Todos los flows comparten un decorador with_run_logging que crea/actualiza la fila en ops.pipeline_runs.
+Concurrencia: ingest_inbox max 1 corrida simultánea (work pool con concurrency_limit=1).
+10. Observabilidad y monitoreo
+10.1 Logs
+Todos los módulos usan packages/logger. Hay que migrarlo a JSON estructurado (campos: ts, level, flow, task, run_id, message).
+En Docker, stdout va a Loki/CloudWatch si se contrata; por ahora basta con docker logs.
+10.2 Tabla ops.pipeline_runs
+Cada flow inserta su fila al inicio (status=running) y la actualiza al final.
+Una vista public.v_pipeline_health muestra los últimos 50 runs con estado, duración y filas.
+10.3 Alertas
+Mínimo viable: webhook a un canal de Slack/Discord cuando hay status=failed o quality_failed.
+Email de respaldo a través de Supabase Edge Function si el webhook falla.
+10.4 Métricas operativas que el front debe exponer
+Última corrida exitosa (timestamp) por fuente.
+Volumen de posts ingeridos por fuente y por día.
+Tasa de PII detectada por día (señal de calidad de scraper).
+Tasa de quality_failed.
+11. Containerización
+Hay que crear los Dockerfiles que docker-compose.yml ya referencia y agregar dos servicios nuevos: prefect y web.
+11.1 Servicios objetivo en docker-compose.yml
+11.2 Reglas para los Dockerfiles
+Base: python:3.11-slim para Python; node:20-alpine para web.
+Multi-stage: stage builder con uv sync, stage runtime sólo con artefactos.
+Usuario no-root.
+Healthcheck en api y prefect.
+ENV: leer todo de .env; nunca hardcodear secrets.
+12. CI/CD con GitHub Actions
+12.1 Workflows obligatorios
+12.2 Tests mínimos
+packages/contracts: tests unitarios de validación Pydantic (cubren mutaciones de los esquemas).
+data_pipeline: tests sobre cleaner, anonymizer, quality checks con fixtures CSV pequeños.
+apps/api: tests de integración contra una instancia local de Supabase (supabase start en CI).
+13. Front React + despliegue
+13.1 Stack del front
+React 18 + Vite + TypeScript.
+supabase-js leyendo de public.v_*. Usar la anon key (RLS protege).
+TanStack Query para caché y refetch.
+Componentes de gráficos: recharts (suficiente para series temporales y barras).
+Routing: react-router-dom.
+Estilos: Tailwind. Ya hay decisión de pragmatismo.
+13.2 Páginas mínimas
+Overview: salud del pipeline + volumen por fuente últimos 7 días.
+Sentiment over time: línea por candidato/keyword (cuando ML alimente sentiment_score).
+Sources breakdown: comparativa de fuentes.
+Pipeline ops: últimas 50 corridas con estado y duración (consume public.v_pipeline_health).
+13.3 Despliegue
+Build: vite build → estáticos.
+Hosting recomendado para llegar rápido: Vercel o Netlify (deploy automático en push a main).
+Alternativa cero-vendor: contenedor nginx + Caddy frente a Supabase. Solo si tiempo lo permite.
+14. Hitos críticos (los pocos que importan)
+Estos son los hitos que, si fallan, el proyecto no se entrega. Son 6, intencionalmente pocos. Cada uno tiene un criterio de aceptación verificable.
+Orden sugerido: H1 → H2 (en paralelo con H4) → H3 → H5 → H6. H4 puede empezar tan pronto exista H1.
+15. Segmentación por agentes (paralelizable entre IAs)
+Cada paquete está pensado para que una instancia de Claude Code (o cualquier IA) lo tome de forma independiente. Las dependencias entre paquetes están declaradas. Los paquetes con la misma fila de "depende de" se pueden hacer en paralelo.
+15.1 Reglas de coordinación entre agentes
+Cada agente trabaja en una rama feature/A<ID>-<short-name>.
+PRs pequeños y mergeables; nunca un PR cruza dos agentes.
+Los contratos en packages/contracts son intocables salvo por un PR explícito firmado por A1+A2.
+Los nombres de tablas/vistas/buckets/secret env vars se declaran en docs/architecture/glossary.md y nadie los renombra a la mitad.
+Cada agente, al cerrar su entregable, agrega un test que un próximo agente pueda correr para verificar.
+16. Estructura final del repositorio
+DatosElectorales/
+├── apps/
+│   ├── api/                 # FastAPI (existe — endurecer)
+│   │   └── routers/         # NUEVO: health, runs, quality, metrics
+│   └── web/                 # NUEVO: React + Vite + Tailwind
+│       └── src/
+│           ├── pages/       # Overview, Sources, Ops
+│           └── lib/         # supabase client, hooks
+├── packages/
+│   ├── contracts/           # Pydantic Bronze/Silver/Gold (existe)
+│   ├── logger/              # logger JSON estructurado (existe — migrar)
+│   └── scrapers/            # twitter, youtube, facebook, tiktok (existe)
+├── data_pipeline/
+│   ├── ingestion/
+│   │   ├── orchestrator.py  # existe
+│   │   └── watcher.py       # NUEVO: file watcher
+│   ├── loaders/             # NUEVO: bronze.py, silver.py, gold.py
+│   ├── silver/              # cleaner, anonymizer, validator (existe)
+│   ├── gold/                # feature_builder (existe)
+│   ├── quality/             # checks (existe — extender)
+│   └── flows/               # NUEVO: flows Prefect
+├── infra/
+│   ├── docker/              # NUEVO: Dockerfiles
+│   ├── docker-compose.yml   # AMPLIAR
+│   └── supabase/
+│       ├── migrations/      # NUEVO: SQL versionado
+│       ├── policies/        # NUEVO: RLS policies SQL
+│       └── seed.sql         # NUEVO: data demo
+├── ml/                      # fuera de alcance de este plan
+├── data/
+│   ├── inbox/               # CSV crudos a la espera
+│   └── processed/           # CSV ya ingeridos
+├── docs/
+│   ├── architecture/        # diagramas, glossary
+│   └── adr/                 # Architecture Decision Records
+├── .github/workflows/       # ci, build, migrations, deploy
+├── .env.example
+├── pyproject.toml
+└── README.md
+17. Comandos clave / runbook
+17.1 Setup local
+# 1. Instalar dependencias
+uv sync
+
+# 2. Variables de entorno
+cp .env.example .env
+# Editar SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, etc.
+
+# 3. Levantar Supabase local (opcional pero recomendado)
+supabase start
+supabase db reset   # aplica migraciones desde infra/supabase/migrations/
+
+# 4. Levantar el stack
+docker compose -f infra/docker-compose.yml up -d
+17.2 Correr el pipeline manualmente
+# Mover un CSV al inbox
+mv ./scrapers_output/tweets.csv data/inbox/twitter/2026-05-09/run_120000.csv
+
+# El watcher lo detecta. Si quieres forzarlo:
+uv run python -m data_pipeline.flows.ingest_inbox
+
+# Verificar
+psql "$SUPABASE_DB_URL" -c "select count(*) from raw.posts where run_id = '...';"
+17.3 Migraciones
+# Crear migración
+supabase migration new add_v_sentiment_daily
+
+# Aplicar a prod
+supabase db push --db-url "$SUPABASE_DB_URL"
+17.4 CI local
+uv run ruff check .
+uv run mypy packages data_pipeline apps
+uv run pytest -q
+18. Riesgos y deuda técnica aceptada
+Prefect server en SQLite local: si el contenedor se cae, se pierde historial de Prefect (no de pipeline_runs, que está en Supabase). Aceptable mientras no haya Prefect Cloud.
+Sin replication ni warm standby de Supabase. El plan de Supabase Free sirve para MVP; ir a Pro antes de elecciones.
+Anonimización a nivel hash de username: no es K-anonymity. El equipo de Risk Management debe definir umbrales (ya en el mermaid V4) antes de exponer el front a un público amplio.
+Storage local data/inbox no se respalda. Asumir que los CSV son reproducibles re-corriendo el scraper.
+Webhook de alertas sin firma: cualquier persona con la URL puede hacer spam. Mitigar con HMAC en una iteración posterior.
+19. Acciones inmediatas para Claude Code
+Cuando Claude Code abra el repo con este documento, debe arrancar por aquí, en este orden:
+Leer §15 y elegir su paquete A<ID>. Si actúa como único agente, empezar por A1.
+Crear la rama feature/A1-supabase-schema y producir las migraciones de §6.2 + RLS de §6.4.
+Commit pequeño, abrir PR contra main, esperar a que A6 (Docker) le levante el entorno o levantarlo él mismo con supabase start.
+Verificar el hito H1 (§14) con un comando reproducible.
+Marcar el hito como cumplido en docs/milestones.md y pasar al siguiente paquete según las dependencias de §15.
+Cualquier desviación del plan se documenta en docs/adr/ con el formato ADR estándar (Context, Decision, Consequences).
+
+--- TABLE 0 ---
+Capa | Storage | Responsable | Trigger
+inbox | data/inbox/<source>/<YYYY-MM-DD>/ | Humano (scraper operator) | Manual
+bronze | Supabase Storage (archivo) + raw.posts (metadatos) | Pipeline | File watcher / cron
+silver | silver.posts (Postgres) | Pipeline | Tras bronze OK
+quality_gate | ops.quality_reports | Pipeline | Tras silver OK
+gold | gold.features + gold.* views | Pipeline | Tras quality PASS
+serving | public.v_* views (lo único que ve el front) | Pipeline (refresh) | Tras gold OK
+
+--- TABLE 1 ---
+Componente | Tecnología | Razón
+Lenguaje pipeline | Python 3.11 (uv) | Ya está en el repo. No tocar.
+Contratos | Pydantic v2 | Ya está. Fuente de verdad de esquemas.
+Orquestador | Prefect 3 | Python-nativo, cero infra extra (servidor local), UI incluida, más simple que Airflow para un equipo chico.
+Warehouse | Supabase (Postgres 15) | Requisito del usuario. Da Postgres + Storage + Auth + PostgREST + Realtime.
+Migraciones SQL | supabase CLI | Versiona migraciones en infra/supabase/migrations/.
+Storage de archivos crudos | Supabase Storage | Mantener archivos en el mismo proveedor reduce piezas móviles.
+Containerización | Docker + docker compose | Ya está empezado. Estandariza ambientes entre agentes.
+API | FastAPI | Ya está el placeholder. Añadir routers.
+Front | React + Vite + TanStack Query | Vite es rápido para arrancar; TanStack Query maneja caché de Supabase.
+Cliente Supabase | supabase-js | Lectura directa a vistas Gold cuando aplica; FastAPI sólo para lógica que requiera service_role.
+Observabilidad | Logging estructurado JSON + tabla ops.pipeline_runs + Prefect UI | Suficiente para esta escala. No instalar Grafana ahora.
+CI/CD | GitHub Actions | Ya hay carpeta .github/workflows.
+Secrets | .env local + GitHub Encrypted Secrets para CI | Mínimo viable. Escalar a Doppler/Vault solo si hace falta.
+
+--- TABLE 2 ---
+Schema | Propósito | Quién escribe | Quién lee
+raw | Bronze: metadatos de archivos crudos en Storage | Pipeline (service_role) | Pipeline
+silver | Posts limpios y anonimizados | Pipeline (service_role) | Pipeline + analítica interna
+gold | Features listas para consumo | Pipeline (service_role) | API + analítica
+public | Vistas v_* que sirven al front | Pipeline (refresca matviews) | anon + authenticated
+ops | Logs de runs, quality reports, alertas | Pipeline + Prefect | Equipo / dashboard ops
+
+--- TABLE 3 ---
+Flow | Schedule | Tasks | On failure
+ingest_inbox | cron */30 * * * * | scan_inbox → upload_storage → upsert_raw → archive_file | Reintenta 3x, alerta
+bronze_to_silver | trigger por ingest_inbox | load_raw → clean → anonymize → upsert_silver | Marca run failed
+quality_gate | trigger por bronze_to_silver | run_checks → persist_report → decide | Marca run quality_failed
+silver_to_gold | trigger por quality PASS/WARN | build_features → upsert_gold | Marca run failed
+refresh_views | trigger por silver_to_gold | refresh_matviews → notify | Reintenta 2x
+
+--- TABLE 4 ---
+Servicio | Imagen / Dockerfile | Puerto | Notas
+api | infra/docker/api.Dockerfile | 8000 | FastAPI, lee SUPABASE_SERVICE_ROLE_KEY
+web | infra/docker/web.Dockerfile | 5173 | Vite dev / build estático
+prefect | prefecthq/prefect:3-latest | 4200 | Server local con SQLite
+worker | infra/docker/worker.Dockerfile | — | Prefect worker que corre los flows
+scraper-runner | infra/docker/scraper.Dockerfile | — | Solo se invoca manualmente: docker compose run scraper-runner …
+
+--- TABLE 5 ---
+Workflow | Trigger | Pasos clave
+ci.yml | PR a main | uv sync · ruff · mypy · pytest · supabase db lint
+build.yml | push a main | Construye imágenes Docker y publica con tag git sha + latest
+migrations.yml | PR que toque infra/supabase/migrations/ | supabase db diff (dry-run) y comenta el plan en el PR
+deploy.yml | tag v* | Aplica migraciones a Supabase prod y despliega web/api
+
+--- TABLE 6 ---
+# | Hito | Criterio de aceptación
+H1 | Supabase schema vivo | supabase db push aplica todas las migraciones de infra/supabase/migrations/ sobre proyecto prod sin error. Existen schemas raw, silver, gold, ops y al menos una vista public.v_*.
+H2 | Pipeline E2E automático | docker compose up + soltar un CSV en data/inbox/twitter/<date>/ deja, sin intervención humana, datos en raw.posts, silver.posts y gold.features con un mismo run_id.
+H3 | Quality Gate bloqueante | Test reproducible: si Silver tiene un 30% de filas con text_clean vacío, el flow termina con status=quality_failed y gold.features no recibe esos rows.
+H4 | Orquestación + observabilidad | Prefect UI lista todos los flows. ops.pipeline_runs muestra al menos 5 corridas históricas con duración, filas y estado. Una corrida fallida dispara alerta a Slack/Discord.
+H5 | Front React leyendo Gold | apps/web buildea. La página Overview muestra datos reales leídos de public.v_sentiment_daily vía supabase-js.
+H6 | CI/CD verde | PR a main corre ci.yml en menos de 8 min. Tag v0.1.0 dispara deploy.yml que aplica migraciones y publica imágenes.
+
+--- TABLE 7 ---
+ID | Agente | Entregable | Ubicación | Depende de
+A1 | DBA / Supabase | Migraciones SQL completas (raw, silver, gold, ops, public.v_*) + buckets Storage + RLS | infra/supabase/migrations/, infra/supabase/policies/ | —
+A2 | Loaders Supabase | Módulos Python que UPSERTean Bronze/Silver/Gold a Supabase usando supabase-py | data_pipeline/loaders/ | A1
+A3 | Ingestion automation | File watcher + integración con orchestrator existente, mover de inbox a processed | data_pipeline/ingestion/watcher.py | A2
+A4 | Quality Gate hardening | Extender checks.py con schema y pii_leak; persistir reportes; bloqueo real | data_pipeline/quality/ | A2
+A5 | Prefect flows | 5 flows del §9.1 con retries, run_logging y dependencias | data_pipeline/flows/ | A2, A3, A4
+A6 | Docker stack | Dockerfiles para api, web, worker, scraper-runner; docker-compose.yml ampliado | infra/docker/ | —
+A7 | API endpoints | Routers FastAPI: /health, /v1/runs, /v1/quality, /v1/metrics | apps/api/routers/ | A1
+A8 | Front React | Scaffolding Vite + páginas Overview, Sources, Ops + cliente supabase-js | apps/web/ | A1
+A9 | CI/CD | Workflows ci.yml, build.yml, migrations.yml, deploy.yml | .github/workflows/ | A6
+A10 | Observabilidad | Logger JSON estructurado + alertas webhook + vista v_pipeline_health | packages/logger/, ops/ | A1, A5
