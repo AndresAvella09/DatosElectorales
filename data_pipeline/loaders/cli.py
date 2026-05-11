@@ -29,7 +29,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "packages"))
 
 from logger import get_logger  # noqa: E402
 
-from data_pipeline.loaders import bronze, gold, runs, silver  # noqa: E402
+from data_pipeline.loaders import bronze, gold, runs, silver, videos  # noqa: E402
 
 log = get_logger("loaders.cli")
 
@@ -98,6 +98,23 @@ def _cmd_e2e(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_videos(args: argparse.Namespace) -> int:
+    """Subir un *_videos.csv a raw.{source}_videos."""
+    run_id = args.run_id or runs.start("ingest_videos")
+    own_run = args.run_id is None
+    try:
+        n = videos.load_csv(args.csv, source=args.source, run_id=run_id)
+        if own_run:
+            runs.finish(run_id, status="success", rows_out=n)
+        print(f"OK videos rows={n} run_id={run_id}")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        if own_run:
+            runs.finish(run_id, status="failed", error=str(exc))
+        log.exception("Videos load fallo: %s", exc)
+        return 1
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     pending = bronze.scan_inbox(args.inbox)
     if not pending:
@@ -143,6 +160,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_e2e.add_argument("--no-archive", action="store_true")
     p_e2e.add_argument("--refresh", action="store_true")
     p_e2e.set_defaults(func=_cmd_e2e)
+
+    p_videos = sub.add_parser("videos", help="Subir *_videos.csv a raw.{source}_videos")
+    p_videos.add_argument("--csv", required=True)
+    p_videos.add_argument("--source", required=True, choices=["youtube", "tiktok"])
+    p_videos.add_argument("--run-id", default=None,
+                          help="Reusar run_id existente (default: crear uno nuevo)")
+    p_videos.set_defaults(func=_cmd_videos)
 
     p_scan = sub.add_parser("scan", help="Listar CSVs pendientes en data/inbox/")
     p_scan.add_argument("--inbox", default=str(_PROJECT_ROOT / "data" / "inbox"))

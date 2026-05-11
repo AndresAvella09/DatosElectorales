@@ -17,6 +17,6 @@ El cliente Supabase es un singleton con la SERVICE_ROLE_KEY (lectura/
 escritura sin RLS). NO usar en frontend ni en codigo expuesto al usuario.
 """
 
-from data_pipeline.loaders import bronze, gold, runs, silver
+from data_pipeline.loaders import bronze, gold, runs, silver, videos
 
-__all__ = ["bronze", "silver", "gold", "runs"]
+__all__ = ["bronze", "silver", "gold", "runs", "videos"]

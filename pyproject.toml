@@ -11,6 +11,8 @@ dependencies = [
     "supabase>=2.0",
     "langdetect>=1.0",
     "watchdog>=4.0",
+    # Para aplicar migraciones SQL (infra/supabase/apply_migrations.py).
+    "psycopg[binary]>=3.2",
     # ── Scrapers ─────────────────────────────────────────────
     # YouTube: API v3 con rotacion de keys.
     "google-api-python-client>=2.100",

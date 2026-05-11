@@ -42,6 +42,7 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +50,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "packages"))
 
 from logger import get_logger  # noqa: E402
 
-from data_pipeline.loaders import bronze, gold, runs, silver  # noqa: E402
+from data_pipeline.loaders import bronze, gold, runs, silver, videos  # noqa: E402
 
 log = get_logger("ingestion.watcher")
 
@@ -149,8 +150,17 @@ class _Processor:
                         path.name)
             return
 
+        # Rutear por sufijo del nombre:
+        #   *_videos.csv   -> raw.{source}_videos (loaders.videos)
+        #   cualquier otro -> raw.posts -> silver.posts -> gold.features
+        if path.name.lower().endswith("_videos.csv"):
+            self._process_videos(path, source)
+        else:
+            self._process_comments(path, source)
+
+    def _process_comments(self, path: Path, source: str) -> None:
         run_id = runs.start("ingest_inbox")
-        log.info("[watcher] >>> START %s (source=%s, run=%s)",
+        log.info("[watcher] >>> START %s (source=%s, run=%s) [comments]",
                  path.name, source, run_id[:8])
         try:
             n_bronze = bronze.load_csv(
@@ -172,6 +182,49 @@ class _Processor:
             runs.finish(run_id, status="failed", error=str(exc))
             log.exception("[watcher] !!! FAIL %s run=%s: %s",
                           path.name, run_id[:8], exc)
+
+    def _process_videos(self, path: Path, source: str) -> None:
+        # Solo youtube/tiktok tienen tabla de videos. Otros: archivar y skip.
+        if source not in ("youtube", "tiktok"):
+            log.info(
+                "[watcher] %s ignorado: no hay tabla raw.%s_videos",
+                path.name, source,
+            )
+            self._archive_silently(path)
+            return
+
+        run_id = runs.start("ingest_videos")
+        log.info("[watcher] >>> START %s (source=%s, run=%s) [videos]",
+                 path.name, source, run_id[:8])
+        try:
+            n = videos.load_csv(str(path), source=source, run_id=run_id)
+            runs.finish(run_id, status="success", rows_out=n)
+            self._archive_silently(path)
+            log.info(
+                "[watcher] <<< DONE %s videos=%d run=%s",
+                path.name, n, run_id[:8],
+            )
+        except Exception as exc:  # noqa: BLE001
+            runs.finish(run_id, status="failed", error=str(exc))
+            log.exception("[watcher] !!! FAIL %s run=%s: %s",
+                          path.name, run_id[:8], exc)
+
+    @staticmethod
+    def _archive_silently(path: Path) -> None:
+        """Mueve a data/processed/<date>/ sin pasar por bronze.load_csv."""
+        import shutil
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        dest_dir = _PROJECT_ROOT / "data" / "processed" / today
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / path.name
+        if dest.exists():
+            stamp = datetime.now(timezone.utc).strftime("%H%M%S")
+            dest = dest_dir / f"{path.stem}.{stamp}{path.suffix}"
+        try:
+            shutil.move(str(path), str(dest))
+            log.info("[watcher] archivado: %s -> %s", path.name, dest)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[watcher] no pude archivar %s: %s", path.name, exc)
 
 
 # ── Estabilizacion (espera que el scraper termine de escribir) ────────
