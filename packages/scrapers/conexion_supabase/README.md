@@ -36,7 +36,106 @@ Otra fuente autorizada del proyecto
 
 ---
 
-## 2. Qué credenciales debes recibir
+## 2. Antes de pedir credenciales: información que debes enviar
+
+Antes de que se te entregue un usuario de ingesta, debes enviar una descripción corta del archivo CSV que vas a subir.
+
+Esto no es para que tú crees tablas ni modifiques Supabase. Es para que la persona encargada de permisos pueda validar la fuente, revisar riesgos de privacidad y confirmar que tu carga va al lugar correcto.
+
+Debes enviar:
+
+```text
+1. Fuente de datos:
+   X / Twitter, Facebook, TikTok u otra.
+
+2. Responsable:
+   Nombre de la persona o equipo que sube el CSV.
+
+3. Objetivo del archivo:
+   Para qué se recolectaron esos datos.
+
+4. Nombre esperado del archivo:
+   Ejemplo: tweets_elecciones_parlamentarias_2026.csv
+
+5. Cantidad aproximada de filas:
+   Ejemplo: 500, 5.000, 20.000.
+
+6. Columnas del CSV:
+   Lista de nombres de columnas.
+
+7. Muestra de 3 a 5 filas:
+   Puede ser una muestra anonimizada si contiene datos sensibles.
+
+8. Tipo de datos sensibles:
+   Indicar si contiene usuarios, nombres, links, ubicación, texto de publicaciones,
+   comentarios, identificadores, fechas, imágenes u otros datos relevantes.
+
+9. Frecuencia de carga:
+   Una sola vez, diaria, semanal, por entrega, etc.
+
+10. Tipo de operación:
+   Carga nueva, actualización de un archivo anterior o reemplazo.
+```
+
+Formato sugerido para enviar esta información:
+
+```text
+Fuente: X / Twitter
+Responsable: Equipo Desarrollo
+Objetivo: Recolectar publicaciones sobre elecciones parlamentarias.
+Archivo: tweets_elecciones_parlamentarias_2026.csv
+Filas aproximadas: 500
+Columnas: tweet_id, text, author_username, created_at, likes, reposts, replies, url
+Muestra: adjunto CSV con 5 filas de ejemplo
+Datos sensibles: usernames, texto público, URLs
+Frecuencia: carga única
+Operación: carga nueva
+```
+
+---
+
+## 3. Cómo funciona la tabla de carga
+
+Para este proyecto se usa una tabla genérica de aterrizaje:
+
+```text
+raw.social_scraping_uploads
+```
+
+Esto significa que no necesitas que exista una tabla diferente para cada CSV.
+
+Cada fila de tu CSV se guarda dentro de una columna llamada:
+
+```text
+payload
+```
+
+`payload` almacena la fila completa en formato JSON.
+
+Ejemplo: si tu CSV tiene esto:
+
+```csv
+post_id,text,author,created_at,likes
+x_001,Texto de prueba,usuario1,2026-01-01T10:00:00Z,10
+```
+
+En Supabase se guarda algo así:
+
+```json
+{
+  "post_id": "x_001",
+  "text": "Texto de prueba",
+  "author": "usuario1",
+  "created_at": "2026-01-01T10:00:00Z",
+  "likes": "10"
+}
+```
+
+Por eso, normalmente no necesitas esperar a que se cree una tabla específica para tu CSV. Sin embargo, sí debes informar su estructura antes de subirlo para control de privacidad, trazabilidad y posterior transformación de datos.
+
+---
+
+## 4. Qué credenciales debes recibir
 
 La persona encargada de permisos te debe entregar estos datos:
 
@@ -76,7 +175,7 @@ SOURCE=facebook
 
 ---
 
-## 3. Qué NO debes recibir ni usar
+## 5. Qué NO debes recibir ni usar
 
 No debes usar ninguna variable como estas:
 
@@ -97,7 +196,7 @@ SUPABASE_AUTH_PASSWORD
 
 ---
 
-## 4. Diferencia importante: usuario del script vs. acceso al dashboard
+## 6. Diferencia importante: usuario del script vs. acceso al dashboard
 
 Las credenciales que recibes para subir datos son credenciales de **Supabase Auth**. Sirven para que el script inicie sesión y cargue datos.
 
@@ -114,7 +213,7 @@ Esto es intencional. El objetivo es permitir la ingesta sin dar acceso total al 
 
 ---
 
-## 5. Preparar el repositorio
+## 7. Preparar el repositorio
 
 Abre PowerShell y ubícate donde tienes el proyecto:
 
@@ -144,7 +243,7 @@ examples
 
 ---
 
-## 6. Crear y activar entorno virtual
+## 8. Crear y activar entorno virtual
 
 Desde la raíz del repo:
 
@@ -174,7 +273,7 @@ python -m pip install supabase python-dotenv pandas
 
 ---
 
-## 7. Crear el archivo `.env`
+## 9. Crear el archivo `.env`
 
 Desde la raíz del repo:
 
@@ -218,7 +317,7 @@ Guarda y cierra.
 
 ---
 
-## 8. Verificar que el `.env` no se suba a Git
+## 10. Verificar que el `.env` no se suba a Git
 
 Ejecuta:
 
@@ -248,9 +347,9 @@ git check-ignore -v .env
 
 ---
 
-## 9. Hacer una primera prueba con CSV de ejemplo
+## 11. Hacer una primera prueba con CSV de ejemplo
 
-### 9.1. Prueba para X/Twitter
+### 11.1. Prueba para X/Twitter
 
 Configura temporalmente estas variables en PowerShell:
 
@@ -265,7 +364,7 @@ Ejecuta:
 python packages\scrapers\conexion_supabase\upload_social_csv_to_supabase.py
 ```
 
-### 9.2. Prueba para Facebook
+### 11.2. Prueba para Facebook
 
 Configura:
 
@@ -282,7 +381,7 @@ python packages\scrapers\conexion_supabase\upload_social_csv_to_supabase.py
 
 ---
 
-## 10. Salida esperada
+## 12. Salida esperada
 
 Si todo está bien, deberías ver algo parecido a esto:
 
@@ -308,7 +407,7 @@ Guarda el `RUN_ID`. Ese código identifica tu carga.
 
 ---
 
-## 11. Subir un CSV real
+## 13. Subir un CSV real
 
 Cuando ya tengas tu CSV real del scraper, solo debes cambiar `CSV_PATH` y `SOURCE`.
 
@@ -343,7 +442,7 @@ python packages\scrapers\conexion_supabase\upload_social_csv_to_supabase.py
 
 ---
 
-## 12. Cómo debe estar el CSV
+## 14. Cómo debe estar el CSV
 
 El CSV debe tener encabezados en la primera fila.
 
@@ -357,22 +456,9 @@ x_002,Segundo texto,usuario2,2026-01-01T10:05:00Z,5,1
 
 No importa si el CSV de X tiene columnas distintas al de Facebook. El script guarda cada fila como JSON dentro de `payload`.
 
-Ejemplo:
-
-```json
-{
-  "post_id": "x_001",
-  "text": "Texto de prueba",
-  "author": "usuario1",
-  "created_at": "2026-01-01T10:00:00Z",
-  "likes": "10",
-  "comments": "2"
-}
-```
-
 ---
 
-## 13. Qué datos se guardan en Supabase
+## 15. Qué datos se guardan en Supabase
 
 Cada fila del CSV se guarda en:
 
@@ -395,7 +481,7 @@ Con esta estructura:
 
 ---
 
-## 14. Verificar en Supabase si te dieron acceso al panel
+## 16. Verificar en Supabase si te dieron acceso al panel
 
 Si además de las credenciales del script te dieron acceso visual al proyecto de Supabase:
 
@@ -419,7 +505,7 @@ Si no tienes acceso al panel, no pasa nada. La carga se valida desde la salida d
 
 ---
 
-## 15. Qué debes reportar después de subir un CSV
+## 17. Qué debes reportar después de subir un CSV
 
 Después de cada carga, reporta esto al equipo:
 
@@ -447,9 +533,9 @@ Observaciones: carga exitosa
 
 ---
 
-## 16. Errores comunes
+## 18. Errores comunes
 
-### 16.1. `Invalid login credentials`
+### 18.1. `Invalid login credentials`
 
 Significa que el correo o la contraseña están mal.
 
@@ -464,7 +550,7 @@ Si el problema continúa, pide a la persona encargada de permisos que cambie la 
 
 ---
 
-### 16.2. `PGRST205: Could not find the table`
+### 18.2. `PGRST205: Could not find the table`
 
 Significa que la API no encuentra la tabla.
 
@@ -472,7 +558,7 @@ Reporta el error a la persona encargada de permisos. Puede faltar exponer el sch
 
 ---
 
-### 16.3. `permission denied for schema raw`
+### 18.3. `permission denied for schema raw`
 
 Tu usuario no tiene permiso para usar el schema `raw`.
 
@@ -480,7 +566,7 @@ Reporta el error a la persona encargada de permisos.
 
 ---
 
-### 16.4. `new row violates row-level security policy`
+### 18.4. `new row violates row-level security policy`
 
 Tu usuario inició sesión, pero no está autorizado por la política RLS para insertar.
 
@@ -492,7 +578,7 @@ SUPABASE_AUTH_EMAIL=
 
 ---
 
-### 16.5. `No existe el CSV`
+### 18.5. `No existe el CSV`
 
 Ejemplo:
 
@@ -512,7 +598,7 @@ o copia la ruta exacta del archivo.
 
 ---
 
-### 16.6. El CSV no tiene encabezados
+### 18.6. El CSV no tiene encabezados
 
 El archivo debe tener nombres de columnas en la primera fila.
 
@@ -533,7 +619,7 @@ x_002,Texto 2,usuario2
 
 ---
 
-## 17. Comandos rápidos
+## 19. Comandos rápidos
 
 ### X/Twitter
 
@@ -567,7 +653,7 @@ python packages\scrapers\conexion_supabase\upload_social_csv_to_supabase.py
 
 ---
 
-## 18. Reglas de seguridad
+## 20. Reglas de seguridad
 
 1. No compartas tu `.env`.
 2. No subas `.env` a GitHub.
@@ -580,16 +666,17 @@ python packages\scrapers\conexion_supabase\upload_social_csv_to_supabase.py
 
 ---
 
-## 19. Resumen final
+## 21. Resumen final
 
 Para subir un CSV necesitas:
 
 ```text
-1. Tener credenciales limitadas.
-2. Configurar el .env.
-3. Tener un CSV con encabezados.
-4. Ejecutar upload_social_csv_to_supabase.py.
-5. Guardar y reportar el RUN_ID.
+1. Enviar primero la estructura esperada del CSV.
+2. Recibir credenciales limitadas.
+3. Configurar el .env.
+4. Tener un CSV con encabezados.
+5. Ejecutar upload_social_csv_to_supabase.py.
+6. Guardar y reportar el RUN_ID.
 ```
 
 Comando principal:
