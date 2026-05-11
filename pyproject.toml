@@ -8,6 +8,28 @@ dependencies = [
     "pydantic>=2.0",
     "pandas>=2.0",
     "python-dotenv>=1.0",
+    "supabase>=2.0",
+    "langdetect>=1.0",
+    "watchdog>=4.0",
+    # Para aplicar migraciones SQL (infra/supabase/apply_migrations.py).
+    "psycopg[binary]>=3.2",
+    # ── Scrapers ─────────────────────────────────────────────
+    # YouTube: API v3 con rotacion de keys.
+    "google-api-python-client>=2.100",
+    # TikTok: lectura de cookies del navegador para sacar msToken.
+    "browser-cookie3>=0.20",
+    # TikTok: el library vendored (packages/scrapers/tiktok/TikTokApi/) depende de:
+    "playwright>=1.40",
+    "httpx>=0.27",
+    "proxyproviders>=0.2.1,<0.3",
+    "requests>=2.31",
+    # ── Orquestacion (A5) ────────────────────────────────────
+    "prefect>=3.0,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
 ]
 
 [tool.uv.workspace]

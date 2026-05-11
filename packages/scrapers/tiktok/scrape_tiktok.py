@@ -14,8 +14,6 @@ reading the msToken cookie from your real Chrome/Firefox session (no new
 window). If that fails, Playwright fetches it silently.
 """
 
-from TikTokApi import TikTokApi
-from TikTokApi.exceptions import EmptyResponseException, InvalidResponseException
 import asyncio
 import csv
 import os
@@ -23,32 +21,50 @@ import random
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()  # loads .env from the current working directory
+# Asegurar que TikTokApi (vendored) y supabase_sync (al lado) sean importables
+# sin importar desde donde se invoque el script.
+_PKG_ROOT = Path(__file__).resolve().parent
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
 
-# Make the project root importable so we can pull in supabase_sync regardless
-# of whether this script is run from the repo root or from examples/.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+from TikTokApi import TikTokApi  # noqa: E402
+from TikTokApi.exceptions import EmptyResponseException, InvalidResponseException  # noqa: E402
 
-# Live Supabase mirror — disable with SUPABASE_SYNC=0.
-SUPABASE_SYNC = os.environ.get("SUPABASE_SYNC", "1") != "0"
+# Buscar el .env desde la raiz del repo (3 niveles arriba: scrapers -> packages -> repo).
+_REPO_ROOT = _PKG_ROOT.parents[2]
+load_dotenv(_REPO_ROOT / ".env")
+load_dotenv()  # tambien intenta el CWD para compat
+
+# ── Legacy Supabase sync (tablas planas tiktok_videos / tiktok_comments) ────
+# Apagado por defecto. El pipeline canonico es: CSV en data/inbox/ + A2 loaders
+# que escriben a raw.posts. Activar con SUPABASE_LEGACY_SYNC=1 si quieres
+# mantener las tablas legacy.
+SUPABASE_SYNC = os.environ.get("SUPABASE_LEGACY_SYNC", "0") == "1"
 try:
     if SUPABASE_SYNC:
-        from supabase_sync import comment_uploader, video_uploader
+        from supabase_sync import comment_uploader, video_uploader  # type: ignore
     else:
         comment_uploader = video_uploader = None  # type: ignore
 except Exception as _exc:  # noqa: BLE001
-    print(f"[supabase] disabled — import failed: {_exc}")
+    print(f"[supabase] legacy sync disabled - import failed: {_exc}")
     SUPABASE_SYNC = False
     comment_uploader = video_uploader = None  # type: ignore
 
+# ── Output paths (data/inbox/tiktok/<YYYY-MM-DD>/) ────────────────────────────
+_INBOX_BASE = Path(os.getenv("INBOX_DIR", _REPO_ROOT / "data" / "inbox"))
+_TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+_RUN_STAMP = datetime.now(timezone.utc).strftime("%H%M%S")
+_OUT_DIR = _INBOX_BASE / "tiktok" / _TODAY
+_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
 # ── configuration ─────────────────────────────────────────────────────────────
 hashtag_name = os.environ.get("HASHTAG", "eleccionescolombia2026")
-videos_csv   = os.environ.get("VIDEOS_CSV",   "tiktok_videos.csv")
-comments_csv = os.environ.get("COMMENTS_CSV", "tiktok_comments.csv")
+videos_csv   = os.environ.get("VIDEOS_CSV",   str(_OUT_DIR / f"run_{_RUN_STAMP}_videos.csv"))
+comments_csv = os.environ.get("COMMENTS_CSV", str(_OUT_DIR / f"run_{_RUN_STAMP}_comments.csv"))
 
 VIDEO_COUNT = int(os.environ.get("VIDEO_COUNT", "60"))
 MAX_NEW_COMMENTS_PER_VIDEO = 1000   # stop after this many *new* comments
