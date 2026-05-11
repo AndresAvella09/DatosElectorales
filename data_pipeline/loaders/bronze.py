@@ -113,17 +113,34 @@ def _post_to_raw_row(
     }
 
 
+def _dedupe_by_id(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Colapsa filas con el mismo `id` (gana la ultima). PostgREST rechaza
+    UPSERTs con PK duplicada en un mismo batch ("ON CONFLICT DO UPDATE
+    command cannot affect row a second time"), y los CSV crudos a veces
+    traen el mismo comment_id repetido.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        by_id[r["id"]] = r
+    return list(by_id.values())
+
+
 def _upsert_in_batches(rows: list[dict[str, Any]]) -> int:
     """UPSERT chunkeado para no exceder limites de PostgREST."""
     if not rows:
         return 0
+    deduped = _dedupe_by_id(rows)
+    dropped = len(rows) - len(deduped)
+    if dropped:
+        log.warning("raw.posts: %d filas con id duplicado colapsadas", dropped)
     sb = get_client()
     total = 0
-    for i in range(0, len(rows), UPSERT_BATCH):
-        chunk = rows[i : i + UPSERT_BATCH]
+    for i in range(0, len(deduped), UPSERT_BATCH):
+        chunk = deduped[i : i + UPSERT_BATCH]
         sb.schema("raw").table("posts").upsert(chunk, on_conflict="id").execute()
         total += len(chunk)
-        log.debug("raw.posts upsert: %d/%d", total, len(rows))
+        log.debug("raw.posts upsert: %d/%d", total, len(deduped))
     return total
 
 
