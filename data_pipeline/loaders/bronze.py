@@ -150,18 +150,19 @@ def load_csv(
     source: str,
     run_id: str,
     *,
-    skip_storage: bool = False,
+    skip_storage: bool = True,
     archive: bool = True,
 ) -> int:
     """
-    Carga un CSV a Bronze (Storage + raw.posts).
+    Carga un CSV a Bronze (raw.posts + opcionalmente Storage).
 
     Args:
         csv_path:     Ruta local al CSV.
-        source:       'twitter' | 'youtube' | 'external'. Pasado al
-                      orchestrator para escoger el mapeador correcto.
+        source:       'twitter' | 'youtube' | 'external' | 'tiktok'.
         run_id:       UUID del run (creado con runs.start()).
-        skip_storage: Si True, no sube a Storage (util para tests).
+        skip_storage: Default True para ahorrar espacio del bucket en plan
+                      free. Pasar False explicitamente si se quiere conservar
+                      el CSV crudo en Storage para auditoria.
         archive:      Si True, mueve el CSV a data/processed/ tras exito.
 
     Returns:
@@ -170,6 +171,13 @@ def load_csv(
     path = Path(csv_path)
     if not path.exists():
         raise FileNotFoundError(f"CSV no existe: {path}")
+
+    # Skip rapido por archivo vacio antes de calcular sha o subir nada.
+    if path.stat().st_size == 0:
+        log.warning("Archivo vacio: %s — se archiva sin procesar.", path.name)
+        if archive:
+            _archive(path)
+        return 0
 
     sha = _sha256(path)
     log.info("Procesando %s (sha256=%s, run=%s)", path.name, sha[:12], run_id[:8])
@@ -183,14 +191,20 @@ def load_csv(
             _archive(path)
         return 0
 
-    storage_path = (
-        _upload_to_storage(path, source) if not skip_storage else f"local://{path}"
-    )
-
+    # Parsear ANTES de subir a Storage: si el CSV no tiene posts validos,
+    # no gastamos espacio del bucket subiendolo.
     posts = ingest_csv(str(path), source)
     if not posts:
         log.warning("Orchestrator no produjo posts a partir de %s", path.name)
+        if archive:
+            _archive(path)
         return 0
+
+    storage_path = (
+        _upload_to_storage(path, source)
+        if not skip_storage
+        else f"local://processed/{path.name}"
+    )
 
     rows = [
         _post_to_raw_row(p, run_id=run_id, storage_path=storage_path, source_sha256=sha)

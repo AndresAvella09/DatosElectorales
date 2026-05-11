@@ -226,7 +226,19 @@ def ingest_csv(csv_path: str, source: str) -> list[RawSocialPost]:
                   source, list(_MAPPERS.keys()))
         return []
 
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        log.warning("CSV vacio (sin columnas): %s — se omite.", path.name)
+        return []
+    except pd.errors.ParserError as exc:
+        log.error("CSV mal formado: %s (%s) — se omite.", path.name, exc)
+        return []
+
+    if len(df) == 0:
+        log.warning("CSV sin filas: %s — se omite.", path.name)
+        return []
+
     log.info("Leyendo %d filas de %s (%s)", len(df), path.name, source)
 
     posts: list[RawSocialPost] = []

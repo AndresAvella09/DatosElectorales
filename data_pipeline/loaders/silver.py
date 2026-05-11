@@ -168,9 +168,13 @@ def promote_run(run_id: str) -> int:
     """
     Lee raw.posts(run_id), aplica cleaner+anonymizer, escribe silver.posts.
 
+    Politica de dedup: si un id ya existe en silver, no se vuelve a escribir
+    (la fila vieja queda intacta). Solo se UPSERTean ids realmente nuevos.
+    Esto evita duplicar filas con cleaned_at distinto en cada rerun y
+    mantiene silver compacto.
+
     Returns:
-        Numero de filas escritas en silver.posts (incluye marcadas como
-        duplicadas).
+        Numero de filas escritas en silver.posts (solo nuevas).
     """
     cleaned_at = datetime.now(timezone.utc).isoformat()
     raw_posts = _fetch_raw_for_run(run_id)
@@ -178,18 +182,23 @@ def promote_run(run_id: str) -> int:
         log.warning("No hay filas raw para run=%s", run_id[:8])
         return 0
 
-    # Marcar duplicados contra lo que ya esta en silver
+    # IDs que ya existen en silver — el cleaner los descarta directamente
+    # via deduplicate(existing_ids=...), no entran al pipeline.
     existing = _existing_silver_ids([p.id for p in raw_posts])
-    log.info("silver.posts ya contiene %d/%d ids del run", len(existing), len(raw_posts))
+    n_skipped = len(existing)
+    if n_skipped:
+        log.info(
+            "silver.posts ya contiene %d/%d ids del run — se skippean",
+            n_skipped, len(raw_posts),
+        )
 
-    # Pipeline de limpieza
-    partial = clean_posts(raw_posts, existing_ids=None)  # marcamos manualmente luego
+    # Pipeline de limpieza (cleaner descarta los que ya estan en silver).
+    partial = clean_posts(raw_posts, existing_ids=existing)
+    if not partial:
+        log.info("Silver: 0 filas nuevas para run=%s (todas duplicadas)",
+                 run_id[:8])
+        return 0
     partial = anonymize_records(partial)
-
-    # Marcar is_duplicate antes de validar
-    for rec in partial:
-        if rec["id"] in existing:
-            rec["is_duplicate"] = True
 
     valid, invalid = validate_silver(partial)
     if invalid:

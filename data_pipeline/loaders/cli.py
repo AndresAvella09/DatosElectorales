@@ -41,7 +41,7 @@ def _cmd_bronze(args: argparse.Namespace) -> int:
             args.csv,
             source=args.source,
             run_id=run_id,
-            skip_storage=args.skip_storage,
+            skip_storage=not args.upload_to_storage,
             archive=not args.no_archive,
         )
         runs.finish(run_id, status="success", rows_out=n)
@@ -77,7 +77,7 @@ def _cmd_e2e(args: argparse.Namespace) -> int:
             args.csv,
             source=args.source,
             run_id=run_id,
-            skip_storage=args.skip_storage,
+            skip_storage=not args.upload_to_storage,
             archive=not args.no_archive,
         )
         if n_bronze == 0:
@@ -136,8 +136,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bronze.add_argument("--csv", required=True)
     p_bronze.add_argument("--source", required=True,
                           choices=["twitter", "youtube", "tiktok", "external"])
-    p_bronze.add_argument("--skip-storage", action="store_true",
-                          help="No subir a Storage (solo raw.posts)")
+    p_bronze.add_argument("--upload-to-storage", action="store_true",
+                          help="Subir el CSV crudo al bucket bronze-raw "
+                               "(off por default para ahorrar espacio)")
     p_bronze.add_argument("--no-archive", action="store_true",
                           help="No mover el CSV a data/processed/")
     p_bronze.set_defaults(func=_cmd_bronze)
@@ -156,7 +157,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_e2e.add_argument("--csv", required=True)
     p_e2e.add_argument("--source", required=True,
                        choices=["twitter", "youtube", "tiktok", "external"])
-    p_e2e.add_argument("--skip-storage", action="store_true")
+    p_e2e.add_argument("--upload-to-storage", action="store_true",
+                       help="Subir el CSV crudo al bucket bronze-raw "
+                            "(off por default)")
     p_e2e.add_argument("--no-archive", action="store_true")
     p_e2e.add_argument("--refresh", action="store_true")
     p_e2e.set_defaults(func=_cmd_e2e)
