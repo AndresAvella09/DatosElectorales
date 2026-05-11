@@ -118,7 +118,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bronze = sub.add_parser("bronze", help="Subir CSV a raw.posts")
     p_bronze.add_argument("--csv", required=True)
     p_bronze.add_argument("--source", required=True,
-                          choices=["twitter", "youtube", "external"])
+                          choices=["twitter", "youtube", "tiktok", "external"])
     p_bronze.add_argument("--skip-storage", action="store_true",
                           help="No subir a Storage (solo raw.posts)")
     p_bronze.add_argument("--no-archive", action="store_true",
@@ -138,7 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_e2e = sub.add_parser("e2e", help="bronze + silver + gold en un solo run")
     p_e2e.add_argument("--csv", required=True)
     p_e2e.add_argument("--source", required=True,
-                       choices=["twitter", "youtube", "external"])
+                       choices=["twitter", "youtube", "tiktok", "external"])
     p_e2e.add_argument("--skip-storage", action="store_true")
     p_e2e.add_argument("--no-archive", action="store_true")
     p_e2e.add_argument("--refresh", action="store_true")

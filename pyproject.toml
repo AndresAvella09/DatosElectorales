@@ -10,6 +10,16 @@ dependencies = [
     "python-dotenv>=1.0",
     "supabase>=2.0",
     "langdetect>=1.0",
+    # ── Scrapers ─────────────────────────────────────────────
+    # YouTube: API v3 con rotacion de keys.
+    "google-api-python-client>=2.100",
+    # TikTok: lectura de cookies del navegador para sacar msToken.
+    "browser-cookie3>=0.20",
+    # TikTok: el library vendored (packages/scrapers/tiktok/TikTokApi/) depende de:
+    "playwright>=1.40",
+    "httpx>=0.27",
+    "proxyproviders>=0.2.1,<0.3",
+    "requests>=2.31",
 ]
 
 [tool.uv.workspace]

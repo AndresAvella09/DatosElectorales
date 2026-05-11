@@ -125,6 +125,46 @@ def _map_youtube_row(row: dict) -> RawSocialPost:
     )
 
 
+def _map_tiktok_row(row: dict) -> RawSocialPost:
+    """Mapea una fila de tiktok_comments al esquema Bronze.
+
+    Esperado del scraper packages/scrapers/tiktok/scrape_tiktok.py:
+        video_id, comment_id, create_time, user_unique_id, user_nickname,
+        text, digg_count, reply_count
+    """
+    raw_id = str(row.get("comment_id", ""))
+    if not raw_id or raw_id == "nan":
+        raise ValueError("tiktok row sin comment_id")
+    tk_id = raw_id if raw_id.startswith("tk_") else f"tk_{raw_id}"
+
+    def _safe_int(v):
+        if v is None or str(v) in ("", "nan"):
+            return None
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    return RawSocialPost(
+        id=tk_id,
+        source="tiktok",
+        source_id=raw_id,
+        datetime_utc=row.get("create_time"),
+        username=row.get("user_unique_id") or row.get("user_nickname"),
+        text=row.get("text", ""),
+        parent_id=None,
+        engagement={
+            k: _safe_int(row.get(src))
+            for k, src in (("likes", "digg_count"), ("replies", "reply_count"))
+            if _safe_int(row.get(src)) is not None
+        },
+        metadata={
+            "video_id": row.get("video_id"),
+            "user_nickname": row.get("user_nickname"),
+        },
+    )
+
+
 def _map_external_row(row: dict) -> RawSocialPost:
     """Mapea una fila de CSV genérico externo al esquema Bronze."""
     import uuid
@@ -159,6 +199,7 @@ def _map_external_row(row: dict) -> RawSocialPost:
 _MAPPERS = {
     "twitter": _map_twitter_row,
     "youtube": _map_youtube_row,
+    "tiktok":  _map_tiktok_row,
     "external": _map_external_row,
 }
 
