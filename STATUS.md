@@ -9,7 +9,7 @@
 |---|---|---|
 | H1 | Supabase schema vivo | ✅ aplicado contra prod (us-east-1) |
 | H2 | Pipeline E2E automatico (CSV inbox -> raw/silver) | ✅ funcional via watcher + Prefect |
-| H3 | Quality Gate bloqueante | 🟡 parcial — checks + reporte; falta integrar como gate real fuera de `pipeline_e2e` |
+| H3 | Quality Gate bloqueante | ✅ 5 checks + reporte persistido + bloqueo en `pipeline_e2e` |
 | H4 | Orquestacion + observabilidad | 🟡 parcial — Prefect server + flows operativos; falta logger JSON + alertas |
 | H5 | Front React leyendo Gold | ⏳ pendiente (A8) |
 | H6 | CI/CD verde | ⏳ pendiente (A9) |
@@ -21,7 +21,7 @@
 | A1 | Migraciones SQL + RLS + buckets | ✅ aplicado | 8 migraciones + raw_videos. `infra/supabase/migrations/`. |
 | A2 | Loaders Bronze/Silver/Gold | ✅ verificado E2E | `data_pipeline/loaders/`. Bronze ahora deduplica por `id` antes del UPSERT. |
 | A3 | File watcher | ✅ verificado E2E | `data_pipeline/ingestion/watcher.py`. Ahora dispara flows de Prefect (no loaders directos). |
-| A4 | Quality Gate hardening | 🟡 parcial | `data_pipeline/quality/{checks,gate}.py`. Persiste reporte en `ops.quality_reports`. |
+| A4 | Quality Gate hardening | ✅ completo | 5 checks (completeness, freshness, volume, schema, pii_leak) en `data_pipeline/quality/checks.py`. Persiste a `ops.quality_reports` y `ops.pipeline_runs.quality_summary` via `gate.py`. Bloqueo real en `pipeline_e2e` (FAIL → `quality_failed`, gold no se toca). |
 | A5 | Flows Prefect | ✅ operativo | `data_pipeline/flows/`: `pipeline_e2e` (silver-only por default), `bronze_to_silver`, `quality_gate`, `ingest_videos`, `refresh_views`. |
 | A6 | Docker stack | ✅ stack arriba | `prefect` + `worker` + `api` en compose. UI Prefect en `:4200`. |
 | A7 | API endpoints FastAPI | 🚧 en curso (rama `feature/A7-api-endpoints`) | Routers `health`, `metrics`, `quality`, `runs`. |
