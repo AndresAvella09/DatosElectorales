@@ -1,7 +1,7 @@
 """
 Supabase sync helper for the X/Twitter scraper.
 
-Reads SUPABASE_URL and SUPABASE_KEY from .env.
+Reads SUPABASE_URL and SUPABASE_ANON_KEY from .env.
 
 Two ingestion paths share this module:
 
@@ -42,16 +42,16 @@ from supabase import Client, create_client
 
 load_dotenv()
 
-# ── Table / column config ──────────────────────────────────────────────────────
+# ── Table / column config
 X_TABLE = "raw_x_tweets"
 X_PK    = "id"
 
 _INT_X_COLS = {"replies", "retweets", "likes"}
 
-BATCH_SIZE = 50    # streaming flush threshold (BatchedUploader)
-BULK_CHUNK = 500   # per-request size for the bulk CSV uploader
+BATCH_SIZE = 50
+BULK_CHUNK = 500
 
-# ── Singleton client ───────────────────────────────────────────────────────────
+# ── Singleton client
 _client: Client | None = None
 
 
@@ -59,10 +59,15 @@ def get_client() -> Client:
     global _client
     if _client is None:
         url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_KEY")
+        key = os.environ.get("SUPABASE_ANON_KEY")
         if not url or not key:
-            raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
-        _client = create_client(url, key)
+            raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env")
+        
+        from supabase import ClientOptions
+        schema = os.environ.get("SUPABASE_SCHEMA", "raw")
+        opts = ClientOptions(schema=schema)
+        
+        _client = create_client(url, key, options=opts)
     return _client
 
 
@@ -96,7 +101,7 @@ def _stream_csv(path: str, int_cols: set[str]) -> Iterable[dict]:
             yield _coerce_row(row, int_cols)
 
 
-# ── PATH C: Streaming uploader (advanced / future use) ────────────────────────
+# ── PATH C: Streaming uploader (uso futuro)
 
 class BatchedUploader:
     """
@@ -148,7 +153,7 @@ def tweet_uploader() -> BatchedUploader:
     return BatchedUploader(X_TABLE, X_PK, _INT_X_COLS)
 
 
-# ── PATH A & B: Bulk CSV uploader ──────────────────────────────────────────────
+# ── PATH A & B: Bulk CSV uploader
 
 def upload_csv_x(path: str = "tweets_colombia.csv", chunk_size: int = BULK_CHUNK) -> int:
     """
@@ -198,8 +203,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "csv",
         nargs="?",
-        default="tweets_colombia.csv",
-        help="Path to the CSV file to upload (default: tweets_colombia.csv)",
+        default=os.environ.get("CSV_PATH", "tweets_colombia.csv"),
+        help='Path to the CSV file to upload (default: from .env CSV_PATH or tweets_colombia.csv)',
     )
     parser.add_argument(
         "--chunk",

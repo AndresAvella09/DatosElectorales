@@ -24,7 +24,7 @@ try:
 except ImportError:
     load_dotenv = None
 
-# ── Supabase sync (PATH A: automatic post-scraping upload) ────────────────────
+# ── Supabase sync (PATH A: automatic post-scraping upload)
 # Disabled by default. Enable with SUPABASE_LEGACY_SYNC=1 in your .env.
 # The scraper will call upload_csv_x() automatically when it finishes.
 # For manual / historical CSV uploads use PATH B:
