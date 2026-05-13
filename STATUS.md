@@ -1,7 +1,7 @@
 # Estado del proyecto
 
 > Resumen rapido. La spec completa esta en `Plan_DataOps_Electoral_2026.docx`.
-> Ultima actualizacion: 2026-05-11.
+> Ultima actualizacion: 2026-05-13.
 
 ## Hitos (§14 del plan)
 
@@ -24,7 +24,7 @@
 | A4 | Quality Gate hardening | ✅ completo | 5 checks (completeness, freshness, volume, schema, pii_leak) en `data_pipeline/quality/checks.py`. Persiste a `ops.quality_reports` y `ops.pipeline_runs.quality_summary` via `gate.py`. Bloqueo real en `pipeline_e2e` (FAIL → `quality_failed`, gold no se toca). |
 | A5 | Flows Prefect | ✅ operativo | `data_pipeline/flows/`: `pipeline_e2e` (silver-only por default), `bronze_to_silver`, `quality_gate`, `ingest_videos`, `refresh_views`. |
 | A6 | Docker stack | ✅ stack arriba | `prefect` + `worker` + `api` en compose. UI Prefect en `:4200`. |
-| A7 | API endpoints FastAPI | 🚧 en curso (rama `feature/A7-api-endpoints`) | Routers `health`, `metrics`, `quality`, `runs`. |
+| A7 | API endpoints FastAPI | ✅ completo | Routers `health`, `runs`, `quality`, `metrics` en `apps/api/`. 11 tests pasan sin Supabase real. |
 | A8 | Front React | ⏳ no empezado | `apps/web/` esta vacio. |
 | A9 | CI/CD GitHub Actions | ⏳ no empezado | `.github/workflows/`. |
 | A10 | Logger JSON + alertas + v_pipeline_health | 🟡 parcial | La vista `public.v_pipeline_health` existe; falta logger JSON estructurado y webhook de alertas. |
@@ -66,7 +66,7 @@ Guia paso a paso para clonadores nuevos: ver `GUIA_E2E.md`.
 - `gold.refresh_views()` es no-op (falta RPC en Supabase). El flow `silver_to_gold` existe pero `pipeline_e2e` salta Gold por default (`skip_gold=True`).
 - Logger no estructurado (A10 deuda).
 - Sin webhook de alertas en `quality_failed` (A10).
-- A7 (endpoints API) sigue en su rama, no mergeado.
+- A7 (endpoints API) mergeado a `develop`. ✅
 - `_videos.csv` files que no son youtube/tiktok se ignoran y archivan.
 
 ## Branches activas
@@ -76,7 +76,7 @@ Guia paso a paso para clonadores nuevos: ver `GUIA_E2E.md`.
 | `main` | Stack base (A1-A3, A6 parcial, raw_videos, scrapers integrados) | ✅ origin/main |
 | `develop` | Integracion antes de main | ✅ origin/develop |
 | `feature/A5-prefect-flows` | Flows Prefect + A6 cerrado + scripts | local → push a `develop` |
-| `feature/A7-api-endpoints` | Endpoints FastAPI (en progreso) | local |
+| `feature/A7-api-endpoints` | Endpoints FastAPI (completo) | mergeado a `develop` |
 
 Las ramas `feature/A1-supabase-schema`, `feature/A2-loaders-supabase`,
 `feature/A3-ingestion-watcher`, `feature/A6-docker-stack`,
