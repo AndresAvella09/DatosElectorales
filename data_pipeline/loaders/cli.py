@@ -41,6 +41,7 @@ def _cmd_bronze(args: argparse.Namespace) -> int:
             args.csv,
             source=args.source,
             run_id=run_id,
+            table=args.table,
             skip_storage=not args.upload_to_storage,
             archive=not args.no_archive,
         )
@@ -55,8 +56,8 @@ def _cmd_bronze(args: argparse.Namespace) -> int:
 
 def _cmd_silver(args: argparse.Namespace) -> int:
     run_id = args.run_id
-    log.info("Promoviendo run=%s a silver", run_id[:8])
-    n = silver.promote_run(run_id)
+    log.info("Promoviendo run=%s a silver (raw.%s -> silver.%s)", run_id[:8], args.raw_table, args.silver_table)
+    n = silver.promote_run(run_id, raw_table=args.raw_table, silver_table=args.silver_table)
     print(f"OK silver rows={n} run_id={run_id}")
     return 0
 
@@ -70,13 +71,16 @@ def _cmd_gold(args: argparse.Namespace) -> int:
 
 
 def _cmd_e2e(args: argparse.Namespace) -> int:
-    """Bronze + Silver + Gold con el mismo run_id."""
+    """Bronze + Silver (+ Gold si no es parlamentarias) con el mismo run_id."""
+    table = args.table
+    is_parl = table == "posts_parlamentarias"
     run_id = runs.start("e2e_manual")
     try:
         n_bronze = bronze.load_csv(
             args.csv,
             source=args.source,
             run_id=run_id,
+            table=table,
             skip_storage=not args.upload_to_storage,
             archive=not args.no_archive,
         )
@@ -84,13 +88,15 @@ def _cmd_e2e(args: argparse.Namespace) -> int:
             runs.finish(run_id, status="success", rows_out=0)
             print(f"OK e2e run_id={run_id} (0 filas - posible duplicado por sha)")
             return 0
-        n_silver = silver.promote_run(run_id)
+        silver_table = table  # raw.X -> silver.X
+        n_silver = silver.promote_run(run_id, raw_table=table, silver_table=silver_table)
+        if is_parl:
+            runs.finish(run_id, status="success", rows_out=n_silver)
+            print(f"OK e2e run_id={run_id} bronze={n_bronze} silver={n_silver} (sin gold para parlamentarias)")
+            return 0
         n_gold = gold.promote_run(run_id, refresh=args.refresh)
         runs.finish(run_id, status="success", rows_out=n_gold)
-        print(
-            f"OK e2e run_id={run_id} bronze={n_bronze} "
-            f"silver={n_silver} gold={n_gold}"
-        )
+        print(f"OK e2e run_id={run_id} bronze={n_bronze} silver={n_silver} gold={n_gold}")
         return 0
     except Exception as exc:  # noqa: BLE001
         runs.finish(run_id, status="failed", error=str(exc))
@@ -149,10 +155,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    p_bronze = sub.add_parser("bronze", help="Subir CSV a raw.posts")
+    p_bronze = sub.add_parser("bronze", help="Subir CSV a raw.<table>")
     p_bronze.add_argument("--csv", required=True)
     p_bronze.add_argument("--source", required=True,
                           choices=["twitter", "youtube", "tiktok", "facebook", "fb_parlamentarias", "external"])
+    p_bronze.add_argument("--table", default="posts",
+                          choices=["posts", "posts_parlamentarias"],
+                          help="Tabla destino en schema raw (default: posts)")
     p_bronze.add_argument("--upload-to-storage", action="store_true",
                           help="Subir el CSV crudo al bucket bronze-raw "
                                "(off por default para ahorrar espacio)")
@@ -160,8 +169,14 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="No mover el CSV a data/processed/")
     p_bronze.set_defaults(func=_cmd_bronze)
 
-    p_silver = sub.add_parser("silver", help="Promover run raw -> silver")
+    p_silver = sub.add_parser("silver", help="Promover run raw.<table> -> silver.<table>")
     p_silver.add_argument("--run-id", required=True)
+    p_silver.add_argument("--raw-table", default="posts",
+                          choices=["posts", "posts_parlamentarias"],
+                          help="Tabla fuente en schema raw (default: posts)")
+    p_silver.add_argument("--silver-table", default="posts",
+                          choices=["posts", "posts_parlamentarias"],
+                          help="Tabla destino en schema silver (default: posts)")
     p_silver.set_defaults(func=_cmd_silver)
 
     p_gold = sub.add_parser("gold", help="Promover run silver -> gold")
@@ -170,10 +185,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="REFRESH matviews tras escribir gold")
     p_gold.set_defaults(func=_cmd_gold)
 
-    p_e2e = sub.add_parser("e2e", help="bronze + silver + gold en un solo run")
+    p_e2e = sub.add_parser("e2e", help="bronze + silver (+ gold) en un solo run")
     p_e2e.add_argument("--csv", required=True)
     p_e2e.add_argument("--source", required=True,
                        choices=["twitter", "youtube", "tiktok", "facebook", "fb_parlamentarias", "external"])
+    p_e2e.add_argument("--table", default="posts",
+                       choices=["posts", "posts_parlamentarias"],
+                       help="Tabla destino en raw y silver (default: posts). "
+                            "Con posts_parlamentarias se omite la etapa Gold.")
     p_e2e.add_argument("--upload-to-storage", action="store_true",
                        help="Subir el CSV crudo al bucket bronze-raw "
                             "(off por default)")

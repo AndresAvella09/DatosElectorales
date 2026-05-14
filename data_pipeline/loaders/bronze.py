@@ -37,7 +37,7 @@ log = get_logger("loaders.bronze")
 BRONZE_BUCKET = "bronze-raw"
 DEFAULT_INBOX = _PROJECT_ROOT / "data" / "inbox"
 DEFAULT_PROCESSED = _PROJECT_ROOT / "data" / "processed"
-UPSERT_BATCH = 200
+UPSERT_BATCH = 50
 
 
 def _sanitize(obj: Any) -> Any:
@@ -59,12 +59,12 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _already_ingested(source_sha256: str) -> bool:
-    """True si algun raw.posts existente tiene este sha256."""
+def _already_ingested(source_sha256: str, table: str = "posts") -> bool:
+    """True si algun raw.<table> existente tiene este sha256."""
     sb = get_client()
     res = (
         sb.schema("raw")
-        .table("posts")
+        .table(table)
         .select("id")
         .eq("source_sha256", source_sha256)
         .limit(1)
@@ -138,21 +138,30 @@ def _dedupe_by_id(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(by_id.values())
 
 
-def _upsert_in_batches(rows: list[dict[str, Any]]) -> int:
+def _upsert_in_batches(rows: list[dict[str, Any]], table: str = "posts") -> int:
     """UPSERT chunkeado para no exceder limites de PostgREST."""
     if not rows:
         return 0
     deduped = _dedupe_by_id(rows)
     dropped = len(rows) - len(deduped)
     if dropped:
-        log.warning("raw.posts: %d filas con id duplicado colapsadas", dropped)
+        log.warning("raw.%s: %d filas con id duplicado colapsadas", table, dropped)
     sb = get_client()
     total = 0
     for i in range(0, len(deduped), UPSERT_BATCH):
         chunk = deduped[i : i + UPSERT_BATCH]
-        sb.schema("raw").table("posts").upsert(chunk, on_conflict="id").execute()
+        for attempt in range(3):
+            try:
+                sb.schema("raw").table(table).upsert(chunk, on_conflict="id").execute()
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 2:
+                    raise
+                import time
+                log.warning("raw.%s batch %d fallo (intento %d/3): %s — reintentando...", table, i, attempt + 1, exc)
+                time.sleep(2 ** attempt)
         total += len(chunk)
-        log.debug("raw.posts upsert: %d/%d", total, len(deduped))
+        log.debug("raw.%s upsert: %d/%d", table, total, len(deduped))
     return total
 
 
@@ -179,29 +188,30 @@ def load_csv(
     source: str,
     run_id: str,
     *,
+    table: str = "posts",
     skip_storage: bool = True,
     archive: bool = True,
 ) -> int:
     """
-    Carga un CSV a Bronze (raw.posts + opcionalmente Storage).
+    Carga un CSV a Bronze (raw.<table> + opcionalmente Storage).
 
     Args:
         csv_path:     Ruta local al CSV.
-        source:       'twitter' | 'youtube' | 'external' | 'tiktok'.
+        source:       'twitter' | 'youtube' | 'external' | 'tiktok' | 'facebook'.
         run_id:       UUID del run (creado con runs.start()).
+        table:        Tabla destino en el schema raw (default 'posts').
         skip_storage: Default True para ahorrar espacio del bucket en plan
                       free. Pasar False explicitamente si se quiere conservar
                       el CSV crudo en Storage para auditoria.
         archive:      Si True, mueve el CSV a data/processed/ tras exito.
 
     Returns:
-        Numero de filas UPSERTeadas en raw.posts.
+        Numero de filas UPSERTeadas en raw.<table>.
     """
     path = Path(csv_path)
     if not path.exists():
         raise FileNotFoundError(f"CSV no existe: {path}")
 
-    # Skip rapido por archivo vacio antes de calcular sha o subir nada.
     if path.stat().st_size == 0:
         log.warning("Archivo vacio: %s — se archiva sin procesar.", path.name)
         if archive:
@@ -209,19 +219,17 @@ def load_csv(
         return 0
 
     sha = _sha256(path)
-    log.info("Procesando %s (sha256=%s, run=%s)", path.name, sha[:12], run_id[:8])
+    log.info("Procesando %s (sha256=%s, run=%s, table=raw.%s)", path.name, sha[:12], run_id[:8], table)
 
-    if _already_ingested(sha):
+    if _already_ingested(sha, table):
         log.warning(
-            "Archivo %s ya fue ingerido previamente (sha256 match). Saltando.",
-            path.name,
+            "Archivo %s ya fue ingerido previamente en raw.%s (sha256 match). Saltando.",
+            path.name, table,
         )
         if archive:
             _archive(path)
         return 0
 
-    # Parsear ANTES de subir a Storage: si el CSV no tiene posts validos,
-    # no gastamos espacio del bucket subiendolo.
     posts = ingest_csv(str(path), source)
     if not posts:
         log.warning("Orchestrator no produjo posts a partir de %s", path.name)
@@ -239,8 +247,8 @@ def load_csv(
         _post_to_raw_row(p, run_id=run_id, storage_path=storage_path, source_sha256=sha)
         for p in posts
     ]
-    inserted = _upsert_in_batches(rows)
-    log.info("raw.posts: %d filas UPSERTeadas (run=%s)", inserted, run_id[:8])
+    inserted = _upsert_in_batches(rows, table)
+    log.info("raw.%s: %d filas UPSERTeadas (run=%s)", table, inserted, run_id[:8])
 
     if archive:
         _archive(path)
