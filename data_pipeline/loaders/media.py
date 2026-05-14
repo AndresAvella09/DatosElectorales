@@ -165,6 +165,24 @@ def load_vote_intentions(csv_path: str | Path) -> int:
 
 # ── API pública ────────────────────────────────────────────────────
 
+def load_momentum(csv_path: str | Path) -> int:
+    df = _read(csv_path, ["fecha", "medio", "candidato"])
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "fecha":          str(r["fecha"])[:10],
+            "medio":          str(r["medio"]).strip(),
+            "candidato":      str(r["candidato"]).strip(),
+            "menciones":      int(r["menciones"]) if pd.notna(r.get("menciones")) else None,
+            "share_of_voice": float(r["share_of_voice"]) if pd.notna(r.get("share_of_voice")) else None,
+            "rolling_7":      float(r["rolling_7"]) if pd.notna(r.get("rolling_7")) else None,
+            "momentum":       float(r["momentum"]) if pd.notna(r.get("momentum")) else None,
+        })
+
+    return _upsert("momentum", rows, "fecha,medio,candidato")
+
+
 def load_all(
     mentions_csv: str | Path | None = None,
     sov_csv: str | Path | None = None,
@@ -182,8 +200,11 @@ def load_all(
     if mentions_csv:
         results["mentions"] = load_mentions(mentions_csv)
 
-    if sov_csv or momentum_csv:
+    if sov_csv:
         results["share_of_voice"] = load_share_of_voice(sov_csv, momentum_csv)
+
+    if momentum_csv:
+        results["momentum"] = load_momentum(momentum_csv)
 
     if vote_csv:
         results["vote_intentions"] = load_vote_intentions(vote_csv)
