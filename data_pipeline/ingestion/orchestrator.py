@@ -53,6 +53,8 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import sys
 from pathlib import Path
 
@@ -69,59 +71,71 @@ from logger import get_logger  # noqa: E402
 log = get_logger("ingestion.orchestrator")
 
 
+# ── Utilidades ────────────────────────────────────────────────────
+
+def _sv(v: object, default: str = "") -> str:
+    """Convierte valor de pandas a str, tratando NaN/None como default."""
+    if v is None:
+        return default
+    s = str(v)
+    return default if s in ("nan", "None") else s
+
+
+def _iv(v: object) -> int | None:
+    """Convierte valor de pandas a int, devuelve None para NaN/None."""
+    if v is None or str(v) in ("nan", "None", ""):
+        return None
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 # ── Mapeadores por fuente ──────────────────────────────────────────
 
 
 def _map_twitter_row(row: dict) -> RawSocialPost:
     """Mapea una fila de CSV de Twitter al esquema Bronze."""
-    tweet_id = str(row.get("id", "")).replace(".0", "")
+    tweet_id = _sv(row.get("id")).replace(".0", "")
+    engagement = {
+        k: _iv(row.get(k))
+        for k in ("replies", "retweets", "likes")
+        if _iv(row.get(k)) is not None
+    }
+    query = _sv(row.get("Query", row.get("query", "")))
     return RawSocialPost(
         id=f"tw_{tweet_id}",
         source="twitter",
         source_id=tweet_id,
-        datetime_utc=row.get("datetime"),
-        username=row.get("username"),
-        text=row.get("content", ""),
+        datetime_utc=_sv(row.get("datetime")) or None,
+        username=_sv(row.get("username")) or None,
+        text=_sv(row.get("content")),
         parent_id=None,
-        engagement={
-            k: row.get(k)
-            for k in ("replies", "retweets", "likes")
-            if row.get(k) is not None and str(row.get(k)) != "nan"
-        },
-        metadata={
-            "query": row.get("Query", row.get("query", "")),
-        },
+        engagement=engagement,
+        metadata={"query": query} if query else {},
     )
 
 
 def _map_youtube_row(row: dict) -> RawSocialPost:
     """Mapea una fila de CSV de YouTube al esquema Bronze."""
-    raw_id = str(row.get("id", ""))
-    # YouTube ya genera IDs con prefijo "yt_", pero verificamos
+    raw_id = _sv(row.get("id"))
     yt_id = raw_id if raw_id.startswith("yt_") else f"yt_{raw_id}"
     source_id = raw_id.replace("yt_", "", 1)
+    parent_id = _sv(row.get("parent_id")) or None
 
-    parent_raw = row.get("parent_id", "")
-    parent_id = str(parent_raw) if parent_raw and str(parent_raw) != "nan" else None
+    engagement = {k: _iv(row.get(k)) for k in ("likes", "views") if _iv(row.get(k)) is not None}
+    metadata = {k: _sv(row.get(k)) for k in ("video_id", "video_title", "query") if _sv(row.get(k))}
 
     return RawSocialPost(
         id=yt_id,
         source="youtube",
         source_id=source_id,
-        datetime_utc=row.get("date"),
-        username=row.get("username"),
-        text=row.get("text", ""),
+        datetime_utc=_sv(row.get("date")) or None,
+        username=_sv(row.get("username")) or None,
+        text=_sv(row.get("text")),
         parent_id=parent_id,
-        engagement={
-            k: row.get(k)
-            for k in ("likes", "views")
-            if row.get(k) is not None and str(row.get(k)) != "nan"
-        },
-        metadata={
-            k: row.get(k)
-            for k in ("video_id", "video_title", "query")
-            if row.get(k) is not None and str(row.get(k)) != "nan"
-        },
+        engagement=engagement,
+        metadata=metadata,
     )
 
 
@@ -132,35 +146,66 @@ def _map_tiktok_row(row: dict) -> RawSocialPost:
         video_id, comment_id, create_time, user_unique_id, user_nickname,
         text, digg_count, reply_count
     """
-    raw_id = str(row.get("comment_id", ""))
-    if not raw_id or raw_id == "nan":
+    raw_id = _sv(row.get("comment_id"))
+    if not raw_id:
         raise ValueError("tiktok row sin comment_id")
     tk_id = raw_id if raw_id.startswith("tk_") else f"tk_{raw_id}"
 
-    def _safe_int(v):
-        if v is None or str(v) in ("", "nan"):
-            return None
-        try:
-            return int(float(v))
-        except (TypeError, ValueError):
-            return None
+    engagement = {
+        k: _iv(row.get(src))
+        for k, src in (("likes", "digg_count"), ("replies", "reply_count"))
+        if _iv(row.get(src)) is not None
+    }
+    video_id = _sv(row.get("video_id"))
 
     return RawSocialPost(
         id=tk_id,
         source="tiktok",
         source_id=raw_id,
-        datetime_utc=row.get("create_time"),
-        username=row.get("user_unique_id") or row.get("user_nickname"),
-        text=row.get("text", ""),
+        datetime_utc=_sv(row.get("create_time")) or None,
+        username=_sv(row.get("user_unique_id")) or _sv(row.get("user_nickname")) or None,
+        text=_sv(row.get("text")),
         parent_id=None,
-        engagement={
-            k: _safe_int(row.get(src))
-            for k, src in (("likes", "digg_count"), ("replies", "reply_count"))
-            if _safe_int(row.get(src)) is not None
-        },
+        engagement=engagement,
+        metadata={"video_id": video_id} if video_id else {},
+    )
+
+
+def _map_facebook_row(row: dict) -> RawSocialPost:
+    """Mapea una fila de facebook_comments al esquema Bronze.
+
+    Columnas esperadas:
+        titulo_post, descripcion_post, comentario, comentario_clean,
+        comentario_norm, likes, url, fecha, archivo_origen,
+        candidatos_detectados, capa_deteccion
+    """
+    import hashlib
+
+    comentario = _sv(row.get("comentario"))
+    fecha = _sv(row.get("fecha"))
+    content_hash = hashlib.md5(f"{comentario}{fecha}".encode("utf-8")).hexdigest()[:16]
+    fb_id = f"fb_{content_hash}"
+
+    likes = _iv(row.get("likes"))
+    return RawSocialPost(
+        id=fb_id,
+        source="facebook",
+        source_id=content_hash,
+        datetime_utc=_sv(fecha) or None,
+        username=None,
+        text=comentario,
+        parent_id=None,
+        engagement={"likes": likes} if likes is not None else {},
         metadata={
-            "video_id": row.get("video_id"),
-            "user_nickname": row.get("user_nickname"),
+            k: _sv(row.get(field))
+            for k, field in {
+                "post_title": "titulo_post",
+                "post_url": "url",
+                "source_file": "archivo_origen",
+                "candidates_detected": "candidatos_detectados",
+                "detection_layer": "capa_deteccion",
+            }.items()
+            if _sv(row.get(field))
         },
     )
 
@@ -194,13 +239,130 @@ def _map_external_row(row: dict) -> RawSocialPost:
     )
 
 
+def _map_fb_parlamentarias_row(row: dict) -> RawSocialPost:
+    """Mapea una fila del CSV de parlamentarias (formato Facebook apify).
+
+    Columnas: postTitle, postDescription, text, likesCount, facebookUrl
+    Sin columna de fecha — el ID se genera por hash del texto + url.
+    Filas donde text es una URL (filas de post vacías) se descartan.
+    """
+    import hashlib
+
+    text = _sv(row.get("text"))
+    # Filtrar filas que no son comentarios (text contiene una URL del post)
+    if text.startswith("http://") or text.startswith("https://"):
+        raise ValueError("fila de post sin comentario — se omite")
+
+    url = _sv(row.get("facebookUrl"))
+    content_hash = hashlib.md5(f"{text}{url}".encode("utf-8")).hexdigest()[:16]
+
+    likes = _iv(row.get("likesCount"))
+    return RawSocialPost(
+        id=f"fb_{content_hash}",
+        source="facebook",
+        source_id=content_hash,
+        datetime_utc=None,
+        username=None,
+        text=text,
+        parent_id=None,
+        engagement={"likes": likes} if likes is not None else {},
+        metadata={
+            k: v
+            for k, v in {
+                "post_title": _sv(row.get("postTitle")),
+                "post_description": _sv(row.get("postDescription")),
+                "post_url": url,
+            }.items()
+            if v
+        },
+    )
+
+
+# ── Lector especializado para CSVs con doble-quoting (formato apify) ──────
+
+def _fix_double_encoding(text: str) -> str:
+    """
+    Corrige texto doblemente codificado: UTF-8 leído como Latin-1 y re-guardado.
+    Ejemplo: 'prÃ³ximo' → 'próximo'
+    """
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return text
+
+
+def _read_double_quoted_csv(path: Path) -> pd.DataFrame:
+    """
+    Lee CSVs con doble-quoting generados por apify/Excel.
+
+    Formato: cada línea es una fila CSV de 2 columnas donde la columna 1
+    contiene el CSV interno completo entre comillas. Los campos internos
+    también usan comillas dobles. El texto puede tener doble-encoding UTF-8.
+
+    Estrategia: two-pass parsing — primero extraer la columna 1 con
+    csv.reader (resuelve el wrapper externo), luego parsear el contenido
+    interno como CSV independiente.
+    """
+    COLS = ["postTitle", "postDescription", "text", "likesCount", "facebookUrl"]
+    BOM_JUNK = "ï»¿\xef\xbb\xbf﻿"
+    rows = []
+
+    with open(path, "rb") as f:
+        raw_bytes = f.read()
+
+    content = raw_bytes.decode("utf-8", errors="replace")
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # Paso 1: parsear la línea como CSV de 2 columnas para extraer el wrapper externo
+        try:
+            outer = next(csv.reader([line], quotechar='"', doublequote=True))
+        except (StopIteration, csv.Error):
+            continue
+
+        inner_text = outer[0].lstrip(BOM_JUNK) if outer else ""
+        if not inner_text:
+            continue
+
+        # Paso 2: parsear el contenido interno como CSV
+        try:
+            fields = next(csv.reader([inner_text], quotechar='"', doublequote=True))
+        except (StopIteration, csv.Error):
+            continue
+
+        if not any(fields):
+            continue
+
+        # Ignorar filas de encabezado
+        if any("postTitle" in f or "facebookUrl" in f for f in fields):
+            continue
+
+        # Rellenar hasta 5 columnas y corregir doble-encoding en cada campo
+        while len(fields) < len(COLS):
+            fields.append("")
+        fields = [_fix_double_encoding(f) for f in fields[:len(COLS)]]
+        rows.append(dict(zip(COLS, fields)))
+
+    return pd.DataFrame(rows, columns=COLS)
+
+
 # ── Mapeo central ──────────────────────────────────────────────────
 
 _MAPPERS = {
-    "twitter": _map_twitter_row,
-    "youtube": _map_youtube_row,
-    "tiktok":  _map_tiktok_row,
-    "external": _map_external_row,
+    "twitter":          _map_twitter_row,
+    "youtube":          _map_youtube_row,
+    "tiktok":           _map_tiktok_row,
+    "facebook":         _map_facebook_row,
+    "fb_parlamentarias": _map_fb_parlamentarias_row,
+    "external":         _map_external_row,
+}
+
+# Fuentes que requieren un lector CSV especializado en lugar de pd.read_csv estándar
+_SPECIAL_READERS: dict[str, callable] = {
+    "fb_parlamentarias": _read_double_quoted_csv,
 }
 
 
@@ -226,8 +388,12 @@ def ingest_csv(csv_path: str, source: str) -> list[RawSocialPost]:
                   source, list(_MAPPERS.keys()))
         return []
 
+    special_reader = _SPECIAL_READERS.get(source)
     try:
-        df = pd.read_csv(path)
+        if special_reader:
+            df = special_reader(path)
+        else:
+            df = pd.read_csv(path)
     except pd.errors.EmptyDataError:
         log.warning("CSV vacio (sin columnas): %s — se omite.", path.name)
         return []
@@ -262,14 +428,18 @@ def ingest_csv(csv_path: str, source: str) -> list[RawSocialPost]:
 def run_ingestion(
     twitter_csv: str | None = None,
     youtube_csv: str | None = None,
+    tiktok_csv: str | None = None,
+    facebook_csv: str | None = None,
     external_csv: str | None = None,
 ) -> list[RawSocialPost]:
     """
-    Ejecuta la ingestión de todos los CSVs disponibles (Twitter, YouTube, External).
+    Ejecuta la ingestión de todos los CSVs disponibles.
 
     Args:
-        twitter_csv: Ruta al CSV de Twitter.
-        youtube_csv: Ruta al CSV de YouTube.
+        twitter_csv:  Ruta al CSV de Twitter.
+        youtube_csv:  Ruta al CSV de YouTube.
+        tiktok_csv:   Ruta al CSV de TikTok (comments).
+        facebook_csv: Ruta al CSV de Facebook (comments).
         external_csv: Ruta al CSV genérico externo.
 
     Returns:
@@ -278,8 +448,10 @@ def run_ingestion(
     all_posts: list[RawSocialPost] = []
 
     sources = {
-        "twitter": twitter_csv,
-        "youtube": youtube_csv,
+        "twitter":  twitter_csv,
+        "youtube":  youtube_csv,
+        "tiktok":   tiktok_csv,
+        "facebook": facebook_csv,
         "external": external_csv,
     }
 

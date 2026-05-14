@@ -74,7 +74,8 @@ SLEEP_BETWEEN_VIDEOS  = (15, 30)  # seconds, randomised
 BACKOFF_BASE = 30                  # seconds, doubles on each retry
 MAX_RETRIES  = 3
 TOKEN_REFRESH_INTERVAL = 30 * 60   # refresh ms_token every 30 minutes
-BROWSER = os.getenv("TIKTOK_BROWSER", "chromium")
+BROWSER  = os.getenv("TIKTOK_BROWSER", "chromium")
+HEADLESS = os.environ.get("TIKTOK_HEADLESS", "false").lower() == "true"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -260,7 +261,7 @@ async def reset_session(api, ms_token: str) -> None:
         num_sessions=1,
         sleep_after=6,
         browser=BROWSER,
-        headless=False,
+        headless=HEADLESS,
     )
     await wait_for_captcha_clear(api)
 
@@ -353,7 +354,7 @@ async def run():
             num_sessions=1,
             sleep_after=6,
             browser=BROWSER,
-            headless=False,
+            headless=HEADLESS,
         )
         await wait_for_captcha_clear(api)
 

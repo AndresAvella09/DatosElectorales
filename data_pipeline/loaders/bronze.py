@@ -16,6 +16,7 @@ Idempotencia:
 from __future__ import annotations
 
 import hashlib
+import math
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -37,6 +38,17 @@ BRONZE_BUCKET = "bronze-raw"
 DEFAULT_INBOX = _PROJECT_ROOT / "data" / "inbox"
 DEFAULT_PROCESSED = _PROJECT_ROOT / "data" / "processed"
 UPSERT_BATCH = 200
+
+
+def _sanitize(obj: Any) -> Any:
+    """Reemplaza float NaN/Inf con None para cumplir JSON."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 
 def _sha256(path: Path) -> str:
@@ -101,14 +113,14 @@ def _post_to_raw_row(
         "storage_path": storage_path,
         "ingested_at": post.ingested_at,
         "run_id": run_id,
-        "raw_payload": {
+        "raw_payload": _sanitize({
             "datetime_utc": post.datetime_utc,
             "username": post.username,
             "text": post.text,
             "parent_id": post.parent_id,
             "engagement": post.engagement,
             "metadata": post.metadata,
-        },
+        }),
         "source_sha256": source_sha256,
     }
 

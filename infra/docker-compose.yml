@@ -82,5 +82,17 @@ services:
     volumes:
       - ../data/inbox:/app/data/inbox
 
+  scraper-tiktok:
+    profiles: ["scrapers"]
+    build:
+      context: ..
+      dockerfile: infra/docker/scraper-tiktok.Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      TIKTOK_HEADLESS: "true"
+    volumes:
+      - ../data/inbox:/app/data/inbox
+
 volumes:
   prefect-data:

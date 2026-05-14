@@ -29,7 +29,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "packages"))
 
 from logger import get_logger  # noqa: E402
 
-from data_pipeline.loaders import bronze, gold, runs, silver, videos  # noqa: E402
+from data_pipeline.loaders import bronze, gold, media, runs, silver, videos  # noqa: E402
 
 log = get_logger("loaders.cli")
 
@@ -115,6 +115,23 @@ def _cmd_videos(args: argparse.Namespace) -> int:
         return 1
 
 
+def _cmd_media(args: argparse.Namespace) -> int:
+    """Carga directa de CSVs de medios a schema media.*"""
+    try:
+        results = media.load_all(
+            mentions_csv=args.mentions_csv,
+            sov_csv=args.sov_csv,
+            momentum_csv=args.momentum_csv,
+            vote_csv=args.vote_csv,
+        )
+        for table, n in results.items():
+            print(f"OK media.{table} rows={n}")
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        log.exception("media load fallo: %s", exc)
+        return 1
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     pending = bronze.scan_inbox(args.inbox)
     if not pending:
@@ -135,7 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bronze = sub.add_parser("bronze", help="Subir CSV a raw.posts")
     p_bronze.add_argument("--csv", required=True)
     p_bronze.add_argument("--source", required=True,
-                          choices=["twitter", "youtube", "tiktok", "external"])
+                          choices=["twitter", "youtube", "tiktok", "facebook", "fb_parlamentarias", "external"])
     p_bronze.add_argument("--upload-to-storage", action="store_true",
                           help="Subir el CSV crudo al bucket bronze-raw "
                                "(off por default para ahorrar espacio)")
@@ -156,7 +173,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_e2e = sub.add_parser("e2e", help="bronze + silver + gold en un solo run")
     p_e2e.add_argument("--csv", required=True)
     p_e2e.add_argument("--source", required=True,
-                       choices=["twitter", "youtube", "tiktok", "external"])
+                       choices=["twitter", "youtube", "tiktok", "facebook", "fb_parlamentarias", "external"])
     p_e2e.add_argument("--upload-to-storage", action="store_true",
                        help="Subir el CSV crudo al bucket bronze-raw "
                             "(off por default)")
@@ -170,6 +187,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_videos.add_argument("--run-id", default=None,
                           help="Reusar run_id existente (default: crear uno nuevo)")
     p_videos.set_defaults(func=_cmd_videos)
+
+    p_media = sub.add_parser("media", help="Cargar datos de medios directo a media.*")
+    p_media.add_argument("--mentions-csv",  default=None, help="mentions.csv")
+    p_media.add_argument("--sov-csv",       default=None, help="share_of_voice.csv")
+    p_media.add_argument("--momentum-csv",  default=None, help="momentum.csv (fusiona con sov)")
+    p_media.add_argument("--vote-csv",      default=None, help="vote_intentions_clean.csv")
+    p_media.set_defaults(func=_cmd_media)
 
     p_scan = sub.add_parser("scan", help="Listar CSVs pendientes en data/inbox/")
     p_scan.add_argument("--inbox", default=str(_PROJECT_ROOT / "data" / "inbox"))

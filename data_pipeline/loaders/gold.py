@@ -42,7 +42,7 @@ def _fetch_silver_for_run(run_id: str) -> list[CleanPost]:
             sb.schema("silver")
             .table("posts")
             .select(
-                "id, source, source_id, datetime_utc, username_hash, "
+                "id, source, source_id, datetime_utc, author_id, "
                 "text_clean, text_original, parent_id, engagement, metadata, "
                 "lang, pii_detected, pii_types, is_duplicate, cleaned_at"
             )

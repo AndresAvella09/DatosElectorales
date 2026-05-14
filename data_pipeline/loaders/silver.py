@@ -128,7 +128,7 @@ def _clean_post_to_row(
         "source": post.source,
         "source_id": post.source_id,
         "datetime_utc": post.datetime_utc,
-        "username_hash": post.username_hash,
+        "author_id": post.author_id,
         "text_clean": post.text_clean,
         "text_original": post.text_original,
         "parent_id": post.parent_id,

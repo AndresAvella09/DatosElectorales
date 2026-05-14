@@ -66,19 +66,31 @@ def _load_api_keys() -> list[str]:
 
 YOUTUBE_API_KEYS = _load_api_keys()
 
-YOUTUBE_QUERIES = [
+_default_queries = [
     "elecciones Colombia 2026",
     "candidatos presidenciales Colombia",
     "debate presidencial Colombia",
 ]
+_env_queries = os.getenv("YOUTUBE_QUERIES")
+YOUTUBE_QUERIES = (
+    [q.strip() for q in _env_queries.split("|") if q.strip()]
+    if _env_queries
+    else _default_queries
+)
 
 # None = paginar hasta agotar (sujeto a hard caps de la API).
-YOUTUBE_MAX_VIDEOS_PER_QUERY: int | None = None
+_env_max_videos = os.getenv("YOUTUBE_MAX_VIDEOS")
+YOUTUBE_MAX_VIDEOS_PER_QUERY: int | None = int(_env_max_videos) if _env_max_videos else None
 YOUTUBE_MAX_COMMENTS_PER_VIDEO: int | None = None
 YOUTUBE_MAX_REPLIES_PER_COMMENT: int | None = None
 
 # Solo videos publicados en los ultimos N dias. None = sin filtro.
-YOUTUBE_PUBLISHED_WITHIN_DAYS = 60
+# Si se definen YOUTUBE_PUBLISHED_AFTER / YOUTUBE_PUBLISHED_BEFORE (ISO fecha
+# YYYY-MM-DD), tienen precedencia sobre YOUTUBE_PUBLISHED_WITHIN_DAYS.
+_env_days = os.getenv("YOUTUBE_PUBLISHED_WITHIN_DAYS")
+YOUTUBE_PUBLISHED_WITHIN_DAYS = int(_env_days) if _env_days else 60
+YOUTUBE_PUBLISHED_AFTER  = os.getenv("YOUTUBE_PUBLISHED_AFTER")   # ej. "2024-06-01"
+YOUTUBE_PUBLISHED_BEFORE = os.getenv("YOUTUBE_PUBLISHED_BEFORE")  # ej. "2025-09-01"
 
 # ── Output paths (data/inbox/<source>/<YYYY-MM-DD>/) ──────────────────
 
@@ -230,6 +242,13 @@ def _iso_duration_to_seconds(iso: str) -> int:
 
 def _search_videos(rot: YouTubeRotator, query: str) -> list[dict]:
     """Pagina search.list, hidrata metadata via videos.list (50 a la vez)."""
+    if YOUTUBE_PUBLISHED_AFTER:
+        after_dt = datetime.fromisoformat(YOUTUBE_PUBLISHED_AFTER).replace(tzinfo=timezone.utc)
+    elif YOUTUBE_PUBLISHED_WITHIN_DAYS:
+        after_dt = datetime.now(timezone.utc) - timedelta(days=YOUTUBE_PUBLISHED_WITHIN_DAYS)
+    else:
+        after_dt = None
+
     base_kwargs = dict(
         q=query,
         part="snippet",
@@ -237,12 +256,13 @@ def _search_videos(rot: YouTubeRotator, query: str) -> list[dict]:
         maxResults=50,
         relevanceLanguage="es",
         regionCode="CO",
-        order="date" if YOUTUBE_PUBLISHED_WITHIN_DAYS else "relevance",
+        order="date" if after_dt else "relevance",
     )
-    if YOUTUBE_PUBLISHED_WITHIN_DAYS:
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            days=YOUTUBE_PUBLISHED_WITHIN_DAYS)
-        base_kwargs["publishedAfter"] = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if after_dt:
+        base_kwargs["publishedAfter"] = after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if YOUTUBE_PUBLISHED_BEFORE:
+        before_dt = datetime.fromisoformat(YOUTUBE_PUBLISHED_BEFORE).replace(tzinfo=timezone.utc)
+        base_kwargs["publishedBefore"] = before_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     video_ids: list[str] = []
     page_token = None

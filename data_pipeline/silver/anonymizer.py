@@ -2,20 +2,15 @@
 anonymizer.py — Detección y enmascaramiento de PII para la capa Silver.
 
 Qué hace:
-  1. Detecta PII en el texto original: emails, teléfonos, cédulas colombianas, nombres propios.
-  2. Enmascara la PII detectada con placeholders ([EMAIL], [PHONE], etc.).
-  3. Hashea el username para anonimización (SHA-256 truncado).
-  4. Registra los tipos de PII detectados para el Compliance Audit Log.
-
-Limitaciones actuales:
-  - La detección de nombres propios es básica (regex de palabras capitalizadas).
-    Para producción se recomienda usar un modelo NER (spaCy, Presidio).
-  - Los patrones de cédula cubren formatos colombianos comunes.
+  1. Detecta PII en el texto original: emails, teléfonos, cédulas colombianas.
+  2. Enmascara la PII detectada con placeholders ([EMAIL], [PHONE], [CEDULA]).
+  3. Extrae author_id desde el campo username (ya viene pseudoanónimo en los CSV fuente).
+  4. Limpia metadata: elimina campos de identidad (user_nickname, author_nickname).
+  5. Registra los tipos de PII detectados para el Compliance Audit Log.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from pathlib import Path
@@ -32,15 +27,10 @@ log = get_logger("silver.anonymizer")
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(r"(?:\+57\s?)?(?:\(?\d{1,3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}")
-_CEDULA_RE = re.compile(r"\b\d{6,10}\b")  # Cédulas colombianas: 6-10 dígitos
+_CEDULA_RE = re.compile(r"\b\d{6,10}\b")
 
-
-def hash_username(username: str | None, salt: str = "datos_electorales_2026") -> str | None:
-    """Hashea un username con SHA-256 truncado para anonimización."""
-    if not username:
-        return None
-    raw = f"{salt}:{username}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+# Campos de identidad que nunca deben llegar a Silver en metadata
+_IDENTITY_METADATA_KEYS = {"user_nickname", "author_nickname", "username", "channel_name"}
 
 
 def detect_and_mask_pii(text: str) -> dict:
@@ -48,10 +38,7 @@ def detect_and_mask_pii(text: str) -> dict:
     Detecta PII en el texto y la enmascara.
 
     Returns:
-        dict con:
-            - text_masked: texto con PII enmascarada
-            - pii_detected: bool
-            - pii_types: lista de tipos detectados
+        dict con text_masked, pii_detected, pii_types.
     """
     if not text:
         return {"text_masked": "", "pii_detected": False, "pii_types": []}
@@ -59,17 +46,14 @@ def detect_and_mask_pii(text: str) -> dict:
     masked = text
     pii_types: list[str] = []
 
-    # Emails
     if _EMAIL_RE.search(masked):
         masked = _EMAIL_RE.sub("[EMAIL]", masked)
         pii_types.append("email")
 
-    # Teléfonos
     if _PHONE_RE.search(masked):
         masked = _PHONE_RE.sub("[PHONE]", masked)
         pii_types.append("phone")
 
-    # Cédulas (solo si hay secuencias de 8-10 dígitos, para evitar falsos positivos)
     cedula_matches = _CEDULA_RE.findall(masked)
     real_cedulas = [m for m in cedula_matches if 8 <= len(m) <= 10]
     if real_cedulas:
@@ -88,21 +72,29 @@ def anonymize_records(records: list[dict]) -> list[dict]:
     """
     Aplica anonimización a una lista de registros parciales de CleanPost.
 
-    Modifica cada registro in-place agregando:
-        - username_hash (reemplazando username)
-        - pii_detected, pii_types
-        - Aplica masking al text_original
+    Por cada registro:
+      - Extrae `username` → `author_id` (ya es pseudoanónimo en los CSV fuente).
+      - Filtra campos de identidad de `metadata`.
+      - Aplica PII masking al text_original.
 
     Args:
-        records: Lista de dicts del cleaner (con text_original, username en metadata).
+        records: Lista de dicts del cleaner (incluyen campo `username`).
 
     Returns:
-        Lista de dicts enriquecidos con campos de anonimización.
+        Lista de dicts listos para construir CleanPost.
     """
     for record in records:
-        # Hash del username
+        # author_id: el username ya viene pseudoanónimo desde el CSV fuente
+        # (twitter_user_xxx, yt_user_xxx, user_unique_id de TikTok, None en Facebook)
         username_raw = record.pop("username", None)
-        record["username_hash"] = hash_username(username_raw)
+        record["author_id"] = username_raw if username_raw else None
+
+        # Limpiar metadata: quitar cualquier campo de identidad
+        if "metadata" in record:
+            record["metadata"] = {
+                k: v for k, v in record["metadata"].items()
+                if k not in _IDENTITY_METADATA_KEYS
+            }
 
         # PII masking sobre el texto original
         pii_result = detect_and_mask_pii(record.get("text_original", ""))
