@@ -42,9 +42,13 @@ class CleanPost(BaseModel):
     source: str = Field(..., description="Red social de origen.")
     source_id: str = Field(..., description="ID original del post en la plataforma.")
     datetime_utc: str | None = Field(default=None, description="Fecha ISO 8601 UTC.")
-    username_hash: str | None = Field(
+    author_id: str | None = Field(
         default=None,
-        description="Hash del username original (anonimizado, para agrupar sin revelar identidad).",
+        description=(
+            "ID del autor en la plataforma. Pseudoanónimo por diseño: "
+            "user_unique_id en TikTok, channel_id en YouTube, username ya "
+            "anonimizado en Twitter. Null para Facebook (sin usuario en los datos)."
+        ),
     )
     text_original: str = Field(default="", description="Texto original antes de limpieza.")
     text_clean: str = Field(

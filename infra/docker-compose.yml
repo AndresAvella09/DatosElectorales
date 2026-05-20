@@ -1,6 +1,56 @@
 version: "3.9"
 
+# ─────────────────────────────────────────────────────────────────────
+# Stack DataOps (A6).
+#
+# Para arrancar:
+#     docker compose -f infra/docker-compose.yml up -d
+#
+# Servicios:
+#   prefect   -> servidor Prefect 3 + UI (http://localhost:4200)
+#   worker    -> watcher de data/inbox/ que dispara pipeline_e2e
+#                (silver-only) por cada CSV que aparezca
+#   api       -> FastAPI placeholder (http://localhost:8000)
+#
+# Los scrapers (scraper-youtube, scraper-twitter) NO se levantan por
+# default: se invocan a demanda con `docker compose run scraper-youtube`.
+# ─────────────────────────────────────────────────────────────────────
+
 services:
+  prefect:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_UI_API_URL: http://localhost:4200/api
+    volumes:
+      - prefect-data:/root/.prefect
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:4200/api/health').read()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/worker.Dockerfile
+    depends_on:
+      prefect:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      PREFECT_API_URL: http://prefect:4200/api
+    volumes:
+      # El watcher detecta CSVs que el host (o un scraper) deja aqui.
+      - ../data/inbox:/app/data/inbox
+      - ../data/processed:/app/data/processed
+    restart: unless-stopped
+
   api:
     build:
       context: ..
@@ -11,20 +61,38 @@ services:
       - ../.env
     restart: unless-stopped
 
+  # ── Scrapers a demanda (no start automatico) ────────────────────
   scraper-youtube:
+    profiles: ["scrapers"]
     build:
       context: ..
       dockerfile: infra/docker/scraper-light.Dockerfile
     env_file:
       - ../.env
     volumes:
-      - ../data/bronze:/app/data/bronze
+      - ../data/inbox:/app/data/inbox
 
   scraper-twitter:
+    profiles: ["scrapers"]
     build:
       context: ..
       dockerfile: infra/docker/scraper-heavy.Dockerfile
     env_file:
       - ../.env
     volumes:
-      - ../data/bronze:/app/data/bronze
+      - ../data/inbox:/app/data/inbox
+
+  scraper-tiktok:
+    profiles: ["scrapers"]
+    build:
+      context: ..
+      dockerfile: infra/docker/scraper-tiktok.Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      TIKTOK_HEADLESS: "true"
+    volumes:
+      - ../data/inbox:/app/data/inbox
+
+volumes:
+  prefect-data:

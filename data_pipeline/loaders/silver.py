@@ -52,15 +52,15 @@ def _detect_lang_strict(text: str, fallback: str | None) -> str | None:
         return fallback
 
 
-def _fetch_raw_for_run(run_id: str) -> list[RawSocialPost]:
-    """Lee todas las filas de raw.posts asociadas a este run."""
+def _fetch_raw_for_run(run_id: str, raw_table: str = "posts") -> list[RawSocialPost]:
+    """Lee todas las filas de raw.<raw_table> asociadas a este run."""
     sb = get_client()
     posts: list[RawSocialPost] = []
     offset = 0
     while True:
         res = (
             sb.schema("raw")
-            .table("posts")
+            .table(raw_table)
             .select("id, source, source_id, raw_payload")
             .eq("run_id", run_id)
             .range(offset, offset + SELECT_PAGE - 1)
@@ -86,28 +86,27 @@ def _fetch_raw_for_run(run_id: str) -> list[RawSocialPost]:
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                log.warning("Saltando raw.posts.id=%s: %s", row.get("id"), exc)
+                log.warning("Saltando raw.%s.id=%s: %s", raw_table, row.get("id"), exc)
         if len(rows) < SELECT_PAGE:
             break
         offset += SELECT_PAGE
 
-    log.info("raw.posts leidos para run=%s: %d filas", run_id[:8], len(posts))
+    log.info("raw.%s leidos para run=%s: %d filas", raw_table, run_id[:8], len(posts))
     return posts
 
 
-def _existing_silver_ids(ids: list[str]) -> set[str]:
-    """IDs ya presentes en silver.posts (para marcar duplicados sin re-pegar)."""
+def _existing_silver_ids(ids: list[str], silver_table: str = "posts") -> set[str]:
+    """IDs ya presentes en silver.<silver_table> (para marcar duplicados sin re-pegar)."""
     if not ids:
         return set()
     sb = get_client()
     existing: set[str] = set()
-    # in_() puede ser pesado con miles de ids — chunkeamos.
     CHUNK = 200
     for i in range(0, len(ids), CHUNK):
         chunk = ids[i : i + CHUNK]
         res = (
             sb.schema("silver")
-            .table("posts")
+            .table(silver_table)
             .select("id")
             .in_("id", chunk)
             .execute()
@@ -128,7 +127,7 @@ def _clean_post_to_row(
         "source": post.source,
         "source_id": post.source_id,
         "datetime_utc": post.datetime_utc,
-        "username_hash": post.username_hash,
+        "author_id": post.author_id,
         "text_clean": post.text_clean,
         "text_original": post.text_original,
         "parent_id": post.parent_id,
@@ -143,7 +142,7 @@ def _clean_post_to_row(
     }
 
 
-def _upsert_in_batches(rows: list[dict[str, Any]]) -> int:
+def _upsert_in_batches(rows: list[dict[str, Any]], silver_table: str = "posts") -> int:
     if not rows:
         return 0
     sb = get_client()
@@ -152,51 +151,49 @@ def _upsert_in_batches(rows: list[dict[str, Any]]) -> int:
         chunk = rows[i : i + UPSERT_BATCH]
         (
             sb.schema("silver")
-            .table("posts")
+            .table(silver_table)
             .upsert(chunk, on_conflict="id,cleaned_at")
             .execute()
         )
         total += len(chunk)
-        log.debug("silver.posts upsert: %d/%d", total, len(rows))
+        log.debug("silver.%s upsert: %d/%d", silver_table, total, len(rows))
     return total
 
 
 # ── API publica ───────────────────────────────────────────────────
 
 
-def promote_run(run_id: str) -> int:
+def promote_run(
+    run_id: str,
+    raw_table: str = "posts",
+    silver_table: str = "posts",
+) -> int:
     """
-    Lee raw.posts(run_id), aplica cleaner+anonymizer, escribe silver.posts.
+    Lee raw.<raw_table>(run_id), aplica cleaner+anonymizer, escribe silver.<silver_table>.
 
     Politica de dedup: si un id ya existe en silver, no se vuelve a escribir
     (la fila vieja queda intacta). Solo se UPSERTean ids realmente nuevos.
-    Esto evita duplicar filas con cleaned_at distinto en cada rerun y
-    mantiene silver compacto.
 
     Returns:
-        Numero de filas escritas en silver.posts (solo nuevas).
+        Numero de filas escritas en silver.<silver_table> (solo nuevas).
     """
     cleaned_at = datetime.now(timezone.utc).isoformat()
-    raw_posts = _fetch_raw_for_run(run_id)
+    raw_posts = _fetch_raw_for_run(run_id, raw_table)
     if not raw_posts:
         log.warning("No hay filas raw para run=%s", run_id[:8])
         return 0
 
-    # IDs que ya existen en silver — el cleaner los descarta directamente
-    # via deduplicate(existing_ids=...), no entran al pipeline.
-    existing = _existing_silver_ids([p.id for p in raw_posts])
+    existing = _existing_silver_ids([p.id for p in raw_posts], silver_table)
     n_skipped = len(existing)
     if n_skipped:
         log.info(
-            "silver.posts ya contiene %d/%d ids del run — se skippean",
-            n_skipped, len(raw_posts),
+            "silver.%s ya contiene %d/%d ids del run — se skippean",
+            silver_table, n_skipped, len(raw_posts),
         )
 
-    # Pipeline de limpieza (cleaner descarta los que ya estan en silver).
     partial = clean_posts(raw_posts, existing_ids=existing)
     if not partial:
-        log.info("Silver: 0 filas nuevas para run=%s (todas duplicadas)",
-                 run_id[:8])
+        log.info("Silver: 0 filas nuevas para run=%s (todas duplicadas)", run_id[:8])
         return 0
     partial = anonymize_records(partial)
 
@@ -204,12 +201,11 @@ def promote_run(run_id: str) -> int:
     if invalid:
         log.warning("Silver: %d filas invalidas descartadas", len(invalid))
 
-    # Refinar lang con langdetect cuando es posible
     for post in valid:
         if post.lang in (None, "unknown"):
             post.lang = _detect_lang_strict(post.text_original, post.lang)
 
     rows = [_clean_post_to_row(p, run_id=run_id, cleaned_at=cleaned_at) for p in valid]
-    written = _upsert_in_batches(rows)
-    log.info("silver.posts: %d filas UPSERTeadas (run=%s)", written, run_id[:8])
+    written = _upsert_in_batches(rows, silver_table)
+    log.info("silver.%s: %d filas UPSERTeadas (run=%s)", silver_table, written, run_id[:8])
     return written

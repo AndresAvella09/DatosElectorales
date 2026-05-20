@@ -50,7 +50,9 @@ sys.path.insert(0, str(_PROJECT_ROOT / "packages"))
 
 from logger import get_logger  # noqa: E402
 
-from data_pipeline.loaders import bronze, gold, runs, silver, videos  # noqa: E402
+from data_pipeline.flows.ingest_videos import ingest_videos  # noqa: E402
+from data_pipeline.flows.pipeline_e2e import pipeline_e2e  # noqa: E402
+from data_pipeline.loaders import bronze  # noqa: E402
 
 log = get_logger("ingestion.watcher")
 
@@ -159,29 +161,36 @@ class _Processor:
             self._process_comments(path, source)
 
     def _process_comments(self, path: Path, source: str) -> None:
-        run_id = runs.start("ingest_inbox")
-        log.info("[watcher] >>> START %s (source=%s, run=%s) [comments]",
-                 path.name, source, run_id[:8])
+        """
+        Dispara el flow `pipeline_e2e` (silver-only por default).
+
+        Llamar el flow function aqui hace que Prefect cree un FlowRun
+        visible en la UI con su task graph completo
+        (bronze.load_csv -> bronze_to_silver -> quality_gate). El run_id
+        de ops.pipeline_runs lo crea el propio flow.
+        """
+        log.info("[watcher] >>> START %s (source=%s) [comments -> pipeline_e2e]",
+                 path.name, source)
         try:
-            n_bronze = bronze.load_csv(
-                str(path), source=source, run_id=run_id, archive=True,
+            summary = pipeline_e2e(
+                csv_path=str(path),
+                source=source,
+                skip_storage=True,
+                skip_gold=True,  # Gold no listo: silver-only por ahora.
             )
-            if n_bronze == 0:
-                runs.finish(run_id, status="success", rows_out=0)
-                log.info("[watcher] <<< DONE %s (0 filas, dup por sha)",
-                         path.name)
-                return
-            n_silver = silver.promote_run(run_id)
-            n_gold = gold.promote_run(run_id)
-            runs.finish(run_id, status="success", rows_out=n_gold)
             log.info(
-                "[watcher] <<< DONE %s bronze=%d silver=%d gold=%d run=%s",
-                path.name, n_bronze, n_silver, n_gold, run_id[:8],
+                "[watcher] <<< DONE %s status=%s bronze=%d silver=%d gate=%s run=%s",
+                path.name,
+                summary.get("status"),
+                summary.get("rows_bronze", 0),
+                summary.get("rows_silver", 0),
+                summary.get("quality_overall"),
+                (summary.get("run_id") or "????????")[:8],
             )
         except Exception as exc:  # noqa: BLE001
-            runs.finish(run_id, status="failed", error=str(exc))
-            log.exception("[watcher] !!! FAIL %s run=%s: %s",
-                          path.name, run_id[:8], exc)
+            # pipeline_e2e ya marca el run como failed en ops.pipeline_runs
+            # y la excepcion queda en el FlowRun de Prefect (visible en UI).
+            log.exception("[watcher] !!! FAIL %s: %s", path.name, exc)
 
     def _process_videos(self, path: Path, source: str) -> None:
         # Solo youtube/tiktok tienen tabla de videos. Otros: archivar y skip.
@@ -193,21 +202,19 @@ class _Processor:
             self._archive_silently(path)
             return
 
-        run_id = runs.start("ingest_videos")
-        log.info("[watcher] >>> START %s (source=%s, run=%s) [videos]",
-                 path.name, source, run_id[:8])
+        log.info("[watcher] >>> START %s (source=%s) [videos -> ingest_videos]",
+                 path.name, source)
         try:
-            n = videos.load_csv(str(path), source=source, run_id=run_id)
-            runs.finish(run_id, status="success", rows_out=n)
-            self._archive_silently(path)
+            summary = ingest_videos(csv_path=str(path), source=source)
             log.info(
-                "[watcher] <<< DONE %s videos=%d run=%s",
-                path.name, n, run_id[:8],
+                "[watcher] <<< DONE %s status=%s rows=%d run=%s",
+                path.name,
+                summary.get("status"),
+                summary.get("rows", 0),
+                (summary.get("run_id") or "????????")[:8],
             )
         except Exception as exc:  # noqa: BLE001
-            runs.finish(run_id, status="failed", error=str(exc))
-            log.exception("[watcher] !!! FAIL %s run=%s: %s",
-                          path.name, run_id[:8], exc)
+            log.exception("[watcher] !!! FAIL %s: %s", path.name, exc)
 
     @staticmethod
     def _archive_silently(path: Path) -> None:

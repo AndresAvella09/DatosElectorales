@@ -91,7 +91,8 @@ def clean_posts(posts: list[RawSocialPost], existing_ids: set[str] | None = None
         lang = detect_language(post.text)
         results.append({
             "id": post.id, "source": post.source, "source_id": post.source_id,
-            "datetime_utc": post.datetime_utc, "text_original": post.text,
+            "datetime_utc": post.datetime_utc, "username": post.username,
+            "text_original": post.text,
             "text_clean": info["text_clean"], "parent_id": post.parent_id,
             "engagement": post.engagement, "metadata": post.metadata,
             "lang": lang, "is_duplicate": False,
