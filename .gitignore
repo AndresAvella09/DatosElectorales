@@ -7,11 +7,15 @@ dist/
 build/
 *.egg
 .eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # ─── Virtual Environments ───
 .venv/
 venv/
 env/
+**/venv/
 
 # ─── uv ───
 # Keep uv.lock in version control for deterministic builds
@@ -27,14 +31,20 @@ env/
 .env
 .env.local
 .env.production
+.env.*
+!.env.example
 
 # ─── Data (versionado con DVC, no con Git) ───
 data/bronze/*
 data/silver/*
 data/gold/*
+data/inbox/*
+data/processed/*
 !data/bronze/.gitkeep
 !data/silver/.gitkeep
 !data/gold/.gitkeep
+!data/inbox/.gitkeep
+!data/processed/.gitkeep
 
 # ─── Scraper outputs (no comitear CSVs crudos) ───
 *.csv
@@ -54,6 +64,7 @@ docker-compose.override.yml
 
 # ─── Node (para apps/web si se usa) ───
 node_modules/
+**/node_modules/
 .next/
 out/
 
@@ -63,3 +74,27 @@ out/
 
 # ─── Debug artifacts ───
 debug_artifacts/
+
+# ─── Imagenes / capturas locales (notas, screenshots) ───
+image.png
+image_*.png
+screenshot*.png
+*.jpeg
+*.jpg
+!packages/scrapers/**/example_*.jpeg
+
+# ─── Notas y archivos sueltos del equipo ───
+A7
+NOTES.md
+notes/
+plan_extracted.txt
+*.docx
+
+# ─── Scripts temporales (mis _check_*, _backfill_*) ───
+_*.py
+!_*.example.py
+
+# ─── Archivos de respaldo de editores ───
+*~
+*.bak
+*.orig

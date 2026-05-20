@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'data_pipeline'\\); from silver.anonymizer import hash_username; print\\(hash_username\\('testuser123'\\)\\)\")",
+      "PowerShell(Remove-Item *)"
+    ]
+  }
+}
