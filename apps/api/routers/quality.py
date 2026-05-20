@@ -21,12 +21,17 @@ router = APIRouter(prefix="/v1/quality", tags=["quality"])
 
 def _row_to_report(row: dict[str, Any]) -> QualityReport:
     from datetime import datetime
+
+    created_at = row["created_at"]
+    if isinstance(created_at, str) and created_at.endswith("Z"):
+        created_at = created_at[:-1] + "+00:00"
+
     return QualityReport(
         run_id=row["run_id"],
         layer=row["layer"],
         overall=row["overall"],
         checks=row.get("checks") or [],
-        created_at=datetime.fromisoformat(row["created_at"]),
+        created_at=datetime.fromisoformat(created_at),
     )
 
 
