@@ -24,7 +24,8 @@ def _row_to_run(row: dict[str, Any]) -> PipelineRun:
     def _dt(v: str | None) -> datetime | None:
         if not v:
             return None
-        return datetime.fromisoformat(v.replace("+00:00", "+00:00"))
+        normalized = v[:-1] + "+00:00" if v.endswith("Z") else v
+        return datetime.fromisoformat(normalized)
 
     return PipelineRun(
         run_id=row["run_id"],
