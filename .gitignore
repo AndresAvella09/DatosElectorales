@@ -76,7 +76,6 @@ out/
 debug_artifacts/
 
 # ─── Imagenes / capturas locales (notas, screenshots) ───
-image.png
 image_*.png
 screenshot*.png
 *.jpeg
